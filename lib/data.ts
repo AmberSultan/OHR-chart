@@ -39,13 +39,13 @@ export const statusColors: Record<string, string> = {
   Reported: "#3b82f6",
   Investigating: "#3b82f6",
   Substantiated: "#ef4444",
-  "Partially Substantiated": "#f97316",
+  "Partially Substantiated": "#F45E2B",
   Unsubstantiated: "#22c55e",
 };
 
 export function getScoreColor(score: number): string {
   if (score >= 80) return "#22c55e";
-  if (score >= 65) return "#f97316";
+  if (score >= 65) return "#F45E2B";
   return "#ef4444";
 }
 
