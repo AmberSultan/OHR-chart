@@ -22,6 +22,7 @@ interface SunburstNode {
   label: string;
   value: number;
   color: string;
+  textColor?: string;
 }
 
 export default function SunburstChart() {
@@ -36,16 +37,20 @@ export default function SunburstChart() {
       label: `Culture Index: ${cultureIndex}`,
       value: 1,
       color: getScoreColor(cultureIndex),
+      textColor: "#ffffff",
     });
 
     // Culture domains ring
     cultureDomains.forEach((domain) => {
+      const bgColor = getScoreColor(domain.score);
+      const needsWhiteText = ["#F45E2B", "#22c55e", "#ef4444", "#3b82f6", "#f45e2b"].includes(bgColor);
       nodes.push({
         id: `domain-${domain.domain}`,
         parent: "Culture Index",
         label: domain.domain,
         value: Math.max(domain.weight, 0.01), // avoid 0
-        color: getScoreColor(domain.score),
+        color: bgColor,
+        textColor: needsWhiteText ? "#ffffff" : undefined,
       });
     });
 
@@ -73,18 +78,22 @@ export default function SunburstChart() {
         parent: "Culture Index",
         label: `${behaviour} `,
         value: ratePerHundred,
-        color: "#ffffff",
+        color: behaviour === "Bullying" ? "#f5eb7e" : "#ffffff",
+      
       });
 
       // Add statuses
       const statuses = behaviourStatusMix.filter((s) => s.behaviour === behaviour);
       statuses.forEach((status, idx) => {
+        const statusColor = statusColors[status.status] || "#9ca3af";
+        const needsWhiteText = ["#ef4444", "#3b82f6", "#22c55e", "#f45e2b", "#F45E2B"].includes(statusColor);
         nodes.push({
           id: `${behaviourId}-${status.status}-${idx}`,
           parent: behaviourId,
           label: `${status.status} (${(status.proportion * 100).toFixed(0)}%)`,
-             value: Math.max(status.proportion * ratePerHundred, 0.01),
-          color: statusColors[status.status] || "#9ca3af",
+          value: Math.max(status.proportion * ratePerHundred, 0.01),
+          color: statusColor,
+          textColor: needsWhiteText ? "#ffffff" : undefined,
         });
       });
     });
@@ -102,6 +111,9 @@ export default function SunburstChart() {
           parents: chartData.map((d) => d.parent),
           values: chartData.map((d) => d.value),
           marker: { colors: chartData.map((d) => d.color) },
+          textfont: {
+            color: chartData.map((d) => d.textColor || "inherit")
+          },
           branchvalues: "remainder",
           hovertemplate: "<b>%{label}</b><br>Value: %{value}<extra></extra>",
         },
