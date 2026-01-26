@@ -1,4 +1,3 @@
-// Culture Index Data
 export const cultureDomains = [
   { domain: "Change", score: 72, weight: 0.02 },
   { domain: "Job Clarity", score: 74, weight: 0.05 },
@@ -36,7 +35,7 @@ export const behaviourStatusMix = [
 ];
 
 export const statusColors: Record<string, string> = {
-  Reported: "#3b82f6",
+  Reported: "#eab308",
   Investigating: "#3b82f6",
   Substantiated: "#ef4444",
   "Partially Substantiated": "#F45E2B",
@@ -44,9 +43,9 @@ export const statusColors: Record<string, string> = {
 };
 
 export function getScoreColor(score: number): string {
-  if (score >= 80) return "#22c55e";
-  if (score >= 65) return "#F45E2B";
-  return "#ef4444";
+  if (score >= 80) return "#19d95f";
+  if (score >= 65) return "#f4502b";
+  return "#f10f0f";
 }
 
 export function calculateCultureIndex(): number {

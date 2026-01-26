@@ -65,7 +65,7 @@ export default function SunburstChart() {
         nodes.push({
           id: behaviourId,
           parent: "Culture Index",
-            label: `${behaviour} (${ratePerHundred}/100)`,
+          label: `${behaviour} (${ratePerHundred}/100)`,
           value: 0.01,
           color: "#d1d5db",
         });
@@ -79,7 +79,6 @@ export default function SunburstChart() {
         label: `${behaviour} `,
         value: ratePerHundred,
         color: behaviour === "Bullying" ? "#f5eb7e" : "#ffffff",
-      
       });
 
       // Add statuses

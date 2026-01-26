@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "framer-motion": "^12.29.0",
     "next": "16.1.2",
     "plotly.js": "^2.35.3",
     "plotly.js-dist-min": "2.35.3",
