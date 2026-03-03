@@ -22,8 +22,8 @@ export default function Home() {
           <CultureAura />
         </div>
 
-        <div className="mt-6 flex gap-6">
-          {/* Culture Domains Breakdown */}
+        {/* <div className="mt-6 flex gap-6">
+
           <div className="w-1/2 rounded-lg bg-zinc-900 p-4 shadow border border-zinc-800">
             <h3 className="mb-3 font-semibold text-white flex items-center justify-between">
               <span>Culture Domains</span>
@@ -51,12 +51,10 @@ export default function Home() {
                 );
               })}
             </div>
-            {/* <div className="mt-3 pt-3 border-t border-zinc-700 text-xs text-zinc-500">
-              Culture Index = Σ (Score × Weight)
-            </div> */}
+        
           </div>
 
-          {/* Behavioural Incidents Breakdown */}
+         
           <div className="w-1/2 rounded-lg bg-zinc-900 p-4 shadow border border-zinc-800">
             <h3 className="mb-3 font-semibold text-white">
               Behavioural Incidents
@@ -75,7 +73,7 @@ export default function Home() {
                       <span className="text-zinc-300">{incident.behaviour}</span>
                       <span className="text-zinc-400">{incident.ratePerHundred}/100</span>
                     </div>
-                    {/* Status bar */}
+               
                     <div className="h-2 bg-zinc-700 rounded-full overflow-hidden flex">
                       {statuses.length > 0 ? (
                         statuses.map((status, idx) => (
@@ -92,7 +90,7 @@ export default function Home() {
                         <div className="bg-zinc-600 h-full w-full" />
                       )}
                     </div>
-                    {/* Hover tooltip */}
+              
                     <div className="absolute left-0 top-full mt-1 hidden group-hover:block bg-zinc-800 border border-zinc-600 rounded-lg p-3 shadow-xl z-10 min-w-[180px]">
                       <div className="text-xs font-semibold text-white mb-2">{incident.behaviour}</div>
                       <div className="space-y-1 text-xs">
@@ -151,11 +149,11 @@ export default function Home() {
               </div>
             </div>
           </div>
-        </div>
+        </div> */}
 
 
-        {/* How to Read */}
-        <div className="mt-4 rounded-lg bg-zinc-800/50 p-4 border border-zinc-700">
+      
+        {/* <div className="mt-4 rounded-lg bg-zinc-800/50 p-4 border border-zinc-700">
           <p className="text-sm text-zinc-400 text-center">
             <span className="text-zinc-300 font-medium">Shape</span> indicates pressure/activity (greater outward distortion = higher incidents or lower scores).
             <span className="text-zinc-300 font-medium ml-2">Color</span> indicates status (
@@ -163,7 +161,7 @@ export default function Home() {
             <span className="text-orange-500 ml-1">amber 65-79</span>,
             <span className="text-red-500 ml-1">red &lt;65</span>).
           </p>
-        </div>
+        </div> */}
       </main>
     </div>
   );

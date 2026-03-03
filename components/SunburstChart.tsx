@@ -37,7 +37,7 @@ export default function SunburstChart() {
       label: `Culture Index: ${cultureIndex}`,
       value: 1,
       color: getScoreColor(cultureIndex),
-      textColor: "#ffffff",
+      textColor: "#000000",
     });
 
     // Culture domains ring
@@ -50,7 +50,7 @@ export default function SunburstChart() {
         label: domain.domain,
         value: Math.max(domain.weight, 0.01), // avoid 0
         color: bgColor,
-        textColor: needsWhiteText ? "#ffffff" : undefined,
+        textColor: needsWhiteText ? "#000000" : undefined,
       });
     });
 
@@ -67,7 +67,7 @@ export default function SunburstChart() {
           parent: "Culture Index",
           label: `${behaviour} (${ratePerHundred}/100)`,
           value: 0.01,
-          color: "#d1d5db",
+          color: "#000000",
         });
         return;
       }

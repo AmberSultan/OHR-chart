@@ -35,17 +35,17 @@ export const behaviourStatusMix = [
 ];
 
 export const statusColors: Record<string, string> = {
-  Reported: "#eab308",
-  Investigating: "#3b82f6",
-  Substantiated: "#ef4444",
-  "Partially Substantiated": "#F45E2B",
-  Unsubstantiated: "#22c55e",
+  Reported: "#FFB74D",
+  Investigating: "#9575CD",
+  Substantiated: "#FF7043",
+  "Partially Substantiated": "#F06292",
+  Unsubstantiated: "#81C784",
 };
 
 export function getScoreColor(score: number): string {
-  if (score >= 80) return "#19d95f";
-  if (score >= 65) return "#f4502b";
-  return "#f10f0f";
+  if (score >= 80) return "#81C784";
+  if (score >= 65) return "#FFB74D";
+  return "#E57373";
 }
 
 export function calculateCultureIndex(): number {

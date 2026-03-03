@@ -62,6 +62,7 @@ export default function CultureAura() {
   const scoreColor = getScoreColor(cultureIndex);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const animRef = useRef<number>(0);
   const timeRef = useRef<number>(0);
   /** Ref-based so the animation loop always reads the latest value without re-renders */
@@ -69,6 +70,7 @@ export default function CultureAura() {
 
   const [displayIndex, setDisplayIndex] = useState(0);
   const [clickedSeg, setClickedSeg] = useState<AuraSegment | null>(null);
+  const [displaySize, setDisplaySize] = useState(490);
 
   // ── Count-up animation (800 ms, ease-in-out cubic) ──
   useEffect(() => {
@@ -85,9 +87,19 @@ export default function CultureAura() {
     requestAnimationFrame(tick);
   }, [cultureIndex]);
 
+  // ── Responsive display size ──
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const update = () => setDisplaySize(Math.min(el.offsetWidth, 490));
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   // ── Canvas dimensions ──
   const SIZE = 500;
-  const DISPLAY = 490;
   const C = SIZE / 2;       // centre
   const INNER_R = 82;       // solid centre circle radius
   const AURA_START = 100;   // where aura begins (just outside centre circle)
@@ -261,7 +273,7 @@ export default function CultureAura() {
     drawAuraWedges(ctx, time);    // Layer 1: coloured wedges (condition + response)
     drawObligationArcs(ctx);      // Layer 2: static structural arcs (duty — no motion)
     drawAxisLines(ctx, time);     // Layer 3: per-segment axis lines
-    drawCenterCircle(ctx);        // Layer 4: solid centre with inner shadow (anchor)
+    drawCenterCircle(ctx, time);  // Layer 4: solid centre with inner shadow (anchor)
     drawHoverLabel(ctx, time);    // Layer 5: label on hover
   }
 
@@ -378,33 +390,47 @@ export default function CultureAura() {
   // Spec: "The central index circle uses solid colour fill with slight inner
   // shadow to create depth." No outer glow. Shadow gradient goes from
   // transparent at the centre out to a darkened rim — inward shadow effect.
-  function drawCenterCircle(ctx: CanvasRenderingContext2D) {
+  function drawCenterCircle(ctx: CanvasRenderingContext2D, time: number) {
     const rgb = hexToRgb(scoreColor);
-
-    // Solid fill — anchor layer
-    ctx.beginPath();
-    ctx.arc(C, C, INNER_R, 0, Math.PI * 2);
-    ctx.fillStyle = scoreColor;
-    ctx.fill();
-
-    // FIX: Inner shadow gradient corrected.
-    // Goes from transparent at 55% radius → darkened at full radius.
-    // This produces a concave depth effect (inward shadow, no outer glow).
-    const shadow = ctx.createRadialGradient(C, C, INNER_R * 0.55, C, C, INNER_R);
     const darkR = Math.max(0, rgb.r - 45);
     const darkG = Math.max(0, rgb.g - 45);
     const darkB = Math.max(0, rgb.b - 45);
+
+    // Blob path — organic multi-harmonic wobble with gentle global breath
+    const POINTS = 72;
+    const blobPath = () => {
+      ctx.beginPath();
+      for (let i = 0; i <= POINTS; i++) {
+        const a = (i / POINTS) * Math.PI * 2;
+        const breath = Math.sin(time * 0.28) * 3.5;   // slow global pulse ±3.5 px
+        const wobble =
+          Math.sin(time * 0.55 + a * 2) * 4.0 +        // main 2-lobe blob
+          Math.sin(time * 0.38 + a * 3) * 2.5 +        // secondary 3-lobe
+          Math.sin(time * 0.22 + a * 5) * 1.2;         // fine surface texture
+        const r = INNER_R + breath + wobble;
+        const x = C + r * Math.cos(a);
+        const y = C + r * Math.sin(a);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+    };
+
+    // Solid fill
+    blobPath();
+    ctx.fillStyle = scoreColor;
+    ctx.fill();
+
+    // Inner shadow for depth
+    const shadow = ctx.createRadialGradient(C, C, INNER_R * 0.55, C, C, INNER_R + 10);
     shadow.addColorStop(0, "rgba(0,0,0,0)");
     shadow.addColorStop(1, `rgba(${darkR},${darkG},${darkB},0.32)`);
-
-    ctx.beginPath();
-    ctx.arc(C, C, INNER_R, 0, Math.PI * 2);
+    blobPath();
     ctx.fillStyle = shadow;
     ctx.fill();
 
-    // Thin border ring to cleanly separate centre from aura
-    ctx.beginPath();
-    ctx.arc(C, C, INNER_R, 0, Math.PI * 2);
+    // Thin border to separate centre from aura
+    blobPath();
     ctx.strokeStyle = `rgba(${darkR},${darkG},${darkB},0.18)`;
     ctx.lineWidth = 1;
     ctx.stroke();
@@ -467,27 +493,27 @@ export default function CultureAura() {
   // ══════════════════════════════════════════
 
   return (
-    <div className="relative w-[780px] h-[490px] mx-auto flex items-center justify-center">
+    <div ref={containerRef} className="relative w-full mx-auto flex items-center justify-center" style={{ height: displaySize }}>
       <canvas
         ref={canvasRef}
         className="absolute cursor-pointer"
-        style={{ width: DISPLAY, height: DISPLAY }}
+        style={{ width: displaySize, height: displaySize }}
       />
 
       {/* Centre overlay — pointer-events-none so clicks pass to canvas */}
       <div
         className="absolute z-10 flex flex-col items-center pointer-events-none"
-        style={{ width: INNER_R * 1.7 * (DISPLAY / SIZE) }}
+        style={{ width: INNER_R * 1.7 * (displaySize / SIZE) }}
       >
         <Image src="/vite.svg" alt="O Logo" width={22} height={22} className="mb-1.5" />
         {/* Count-up animates displayIndex via ease-in-out over 800ms */}
         <div
           className="text-[22px] font-semibold tabular-nums leading-none"
-          style={{ color: "#fff" }}
+          style={{ color: "#1a1a1a" }}
         >
           {displayIndex}
         </div>
-        <div className="text-[8px] text-white/60 mt-1 uppercase tracking-[0.18em]">
+        <div className="text-[8px] text-black/60 mt-1 uppercase tracking-[0.18em]">
           Culture Index
         </div>
       </div>
