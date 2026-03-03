@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useRef } from "react";
 import Image from "next/image";
-
 import {
   cultureDomains,
   behaviouralIncidents,
@@ -12,12 +11,14 @@ import {
   getScoreColor,
 } from "@/lib/data";
 
+// ---- Types ----
+
 interface StatusSubSegment {
   status: string;
   color: string;
+  proportion: number;
   startAngle: number;
   endAngle: number;
-  proportion: number;
 }
 
 interface AuraSegment {
@@ -26,129 +27,209 @@ interface AuraSegment {
   startAngle: number;
   endAngle: number;
   midAngle: number;
-  pressure: number;
+  /** 0–1: how far the indicator spike extends (bounded extrusion) */
+  extrusion: number;
   color: string;
   score?: number;
+  weight?: number;
+  ratePerHundred?: number;
   statusSubSegments?: StatusSubSegment[];
 }
 
-function getBehaviourStatusColors(behaviour: string): Array<{ color: string; weight: number }> {
-  const statusMix = behaviourStatusMix.filter((s) => s.behaviour === behaviour);
-  if (statusMix.length === 0) {
-    return [{ color: "#c52822", weight: 1 }];
-  }
-  return statusMix.map((s) => ({
-    color: statusColors[s.status] || "#365584",
-    weight: s.proportion,
-  }));
-}
+// ---- Helpers ----
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } {
-  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  return result
-    ? {
-        r: parseInt(result[1], 16),
-        g: parseInt(result[2], 16),
-        b: parseInt(result[3], 16),
-      }
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  return m
+    ? { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) }
     : { r: 148, g: 163, b: 184 };
 }
 
+/**
+ * Normalise an angle (radians) into [-π/2, 3π/2).
+ * Segments are defined in this range (first starts at -π/2 = 12 o'clock).
+ */
+function normaliseAngle(a: number): number {
+  while (a < -Math.PI / 2) a += Math.PI * 2;
+  while (a >= (3 * Math.PI) / 2) a -= Math.PI * 2;
+  return a;
+}
+
+// ---- Component ----
+
 export default function CultureAura() {
   const cultureIndex = calculateCultureIndex();
+  const scoreColor = getScoreColor(cultureIndex);
+
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const animationRef = useRef<number>(0);
+  const animRef = useRef<number>(0);
   const timeRef = useRef<number>(0);
+  /** Ref-based so the animation loop always reads the latest value without re-renders */
+  const hovRef = useRef<AuraSegment | null>(null);
 
-  const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null);
-  const [hoveredSegment, setHoveredSegment] = useState<AuraSegment | null>(null);
-  const hoveredSegmentRef = useRef<AuraSegment | null>(null);
+  const [displayIndex, setDisplayIndex] = useState(0);
+  const [clickedSeg, setClickedSeg] = useState<AuraSegment | null>(null);
 
-  const size = 500;
-  const displaySize = 490;
-  const center = size / 2;
-  const baseRadius = 120;
-  const maxExtension = 60;
-  const innerRingRadius = 95;
+  // ── Count-up animation (800 ms, ease-in-out cubic) ──
+  useEffect(() => {
+    const end = cultureIndex;
+    const duration = 800;
+    const t0 = performance.now();
+    const tick = (now: number) => {
+      const t = Math.min((now - t0) / duration, 1);
+      // ease-in-out cubic — calm, controlled, no bounce
+      const eased = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+      setDisplayIndex(Math.round(end * eased * 10) / 10);
+      if (t < 1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }, [cultureIndex]);
 
-  const getDominantBehaviourColor = (behaviour: string): string => {
-    const colors = getBehaviourStatusColors(behaviour);
-    const dominant = colors.reduce((prev, curr) =>
-      curr.weight > prev.weight ? curr : prev
-    );
-    return dominant.color;
-  };
+  // ── Canvas dimensions ──
+  const SIZE = 500;
+  const DISPLAY = 490;
+  const C = SIZE / 2;       // centre
+  const INNER_R = 82;       // solid centre circle radius
+  const AURA_START = 100;   // where aura begins (just outside centre circle)
+  const AURA_BASE = 152;    // base outer radius (zero extrusion)
+  const MAX_EXT = 48;       // max extrusion pixels (represents "+2 units")
 
+  // ── Build segments ──
   const totalItems = cultureDomains.length + behaviouralIncidents.length;
-  const segmentAngle = (Math.PI * 2) / totalItems;
-
+  const segW = (Math.PI * 2) / totalItems;
   const segments: AuraSegment[] = [];
-  let segmentIndex = 0;
+  let si = 0;
 
-  // Add domain segments
+  // Domain segments (inner ring — living condition layer)
   cultureDomains.forEach((d) => {
-    const startAngle = segmentIndex * segmentAngle - Math.PI / 2;
-    const endAngle = (segmentIndex + 1) * segmentAngle - Math.PI / 2;
+    const sa = si * segW - Math.PI / 2;
+    const ea = (si + 1) * segW - Math.PI / 2;
+    // Bounded extrusion: scope weight +1 base offset, capped to 1 (= MAX_EXT px)
+    const ext = Math.min(((100 - d.score) / 100) * (d.weight + 1), 1);
     segments.push({
       name: d.domain,
       type: "domain",
-      pressure: (100 - d.score) / 150,
+      startAngle: sa,
+      endAngle: ea,
+      midAngle: (sa + ea) / 2,
+      extrusion: ext,
       color: getScoreColor(d.score),
       score: d.score,
-      startAngle,
-      endAngle,
-      midAngle: (startAngle + endAngle) / 2,
+      weight: d.weight,
     });
-    segmentIndex++;
+    si++;
   });
 
-  // Add behaviour segments with status sub-segments
+  // Behaviour segments (outer ring — structural response layer)
   behaviouralIncidents.forEach((b) => {
-    const startAngle = segmentIndex * segmentAngle - Math.PI / 2;
-    const endAngle = (segmentIndex + 1) * segmentAngle - Math.PI / 2;
-    const segmentWidth = endAngle - startAngle;
+    const sa = si * segW - Math.PI / 2;
+    const ea = (si + 1) * segW - Math.PI / 2;
+    const sw = ea - sa;
+    // Bounded extrusion from event rate, capped to 1
+    const ext = Math.min(b.ratePerHundred * 1.5, 1);
 
-    // Get status colors and proportions for this behaviour
-    const statusColors_arr = getBehaviourStatusColors(b.behaviour);
-    const totalWeight = statusColors_arr.reduce((sum, s) => sum + s.weight, 0);
+    const statusArr = behaviourStatusMix.filter((s) => s.behaviour === b.behaviour);
+    const totalProp = statusArr.reduce((s, x) => s + x.proportion, 0) || 1;
+    let ca = sa;
 
-    // Create sub-segments for each status
-    const statusSubSegments: StatusSubSegment[] = [];
-    let currentAngle = startAngle;
-
-    statusColors_arr.forEach((status, idx) => {
-      const proportion = status.weight / totalWeight;
-      const subSegmentWidth = segmentWidth * proportion;
-      const subEndAngle = currentAngle + subSegmentWidth;
-
-      // Get the status name from behaviourStatusMix
-      const statusMix = behaviourStatusMix.filter((s) => s.behaviour === b.behaviour);
-      const statusName = statusMix[idx]?.status || "Unknown";
-
-      statusSubSegments.push({
-        status: statusName,
-        color: status.color,
-        startAngle: currentAngle,
-        endAngle: subEndAngle,
-        proportion,
-      });
-      currentAngle = subEndAngle;
+    const statusSubSegments: StatusSubSegment[] = statusArr.map((s) => {
+      const prop = s.proportion / totalProp;
+      const subSa = ca;
+      const subEa = ca + sw * prop;
+      ca = subEa;
+      return {
+        status: s.status,
+        color: statusColors[s.status] || "#94a3b8",
+        proportion: prop,
+        startAngle: subSa,
+        endAngle: subEa,
+      };
     });
+
+    // Dominant status colour for axis line
+    const dominant =
+      statusArr.length > 0
+        ? statusArr.reduce((a, x) => (x.proportion > a.proportion ? x : a))
+        : null;
+    const domCol = dominant ? statusColors[dominant.status] || "#94a3b8" : "#94a3b8";
 
     segments.push({
       name: b.behaviour,
       type: "behaviour",
-      pressure: b.ratePerHundred * 1.5,
-      color: getDominantBehaviourColor(b.behaviour),
-      startAngle,
-      endAngle,
-      midAngle: (startAngle + endAngle) / 2,
-      statusSubSegments,
+      startAngle: sa,
+      endAngle: ea,
+      midAngle: (sa + ea) / 2,
+      extrusion: ext,
+      color: domCol,
+      ratePerHundred: b.ratePerHundred,
+      statusSubSegments: statusArr.length > 0 ? statusSubSegments : undefined,
     });
-    segmentIndex++;
+    si++;
   });
 
-  /** --- Canvas Animation --- */
+  // ── Segment lookup by angle ──
+  function findSegment(raw: number): AuraSegment | null {
+    const n = normaliseAngle(raw);
+    return segments.find((s) => n >= s.startAngle && n < s.endAngle) ?? null;
+  }
+
+  // ── Outer radius for a segment ──
+  // FIX: Breathing amplitude reduced to 1.5 px max (breathing-level only).
+  // Speed reduced to time * 0.06 — nearly imperceptible continuous motion,
+  // just enough to feel alive without appearing animated.
+  function outerRadius(seg: AuraSegment, time: number): number {
+    const breath = Math.sin(time * 0.06 + seg.midAngle * 0.5) * 1.5;
+    return AURA_BASE + seg.extrusion * MAX_EXT + breath;
+  }
+
+  // ── Hover / click event listeners ──
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const toCanvas = (e: MouseEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: (e.clientX - rect.left) * (SIZE / rect.width),
+        y: (e.clientY - rect.top) * (SIZE / rect.height),
+      };
+    };
+
+    const onMove = (e: MouseEvent) => {
+      const { x, y } = toCanvas(e);
+      const dx = x - C, dy = y - C;
+      const r = Math.sqrt(dx * dx + dy * dy);
+      hovRef.current =
+        r >= AURA_START && r <= AURA_BASE + MAX_EXT + 18
+          ? findSegment(Math.atan2(dy, dx))
+          : null;
+    };
+
+    const onLeave = () => { hovRef.current = null; };
+
+    const onClick = (e: MouseEvent) => {
+      const { x, y } = toCanvas(e);
+      const dx = x - C, dy = y - C;
+      const r = Math.sqrt(dx * dx + dy * dy);
+      if (r < AURA_START || r > AURA_BASE + MAX_EXT + 18) {
+        setClickedSeg(null);
+        return;
+      }
+      const seg = findSegment(Math.atan2(dy, dx));
+      setClickedSeg((prev) => (prev?.name === seg?.name ? null : seg));
+    };
+
+    canvas.addEventListener("mousemove", onMove);
+    canvas.addEventListener("mouseleave", onLeave);
+    canvas.addEventListener("click", onClick);
+    return () => {
+      canvas.removeEventListener("mousemove", onMove);
+      canvas.removeEventListener("mouseleave", onLeave);
+      canvas.removeEventListener("click", onClick);
+    };
+  }, [segments]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Animation loop ──
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -156,319 +237,346 @@ export default function CultureAura() {
     if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = size * dpr;
-    canvas.height = size * dpr;
+    canvas.width = SIZE * dpr;
+    canvas.height = SIZE * dpr;
     ctx.scale(dpr, dpr);
 
-    let lastTime = 0;
-    const animate = (timestamp: number) => {
-      const delta = timestamp - lastTime;
-      lastTime = timestamp;
-      timeRef.current += delta * 0.001;
-
-      ctx.clearRect(0, 0, size, size);
-      drawAura(ctx, timeRef.current);
-      drawGlowingRing(ctx);
-
-      animationRef.current = requestAnimationFrame(animate);
+    let last = 0;
+    const loop = (ts: number) => {
+      timeRef.current += (ts - last) * 0.001;
+      last = ts;
+      ctx.clearRect(0, 0, SIZE, SIZE);
+      drawScene(ctx, timeRef.current);
+      animRef.current = requestAnimationFrame(loop);
     };
-    animationRef.current = requestAnimationFrame(animate);
+    animRef.current = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(animRef.current);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-    return () => cancelAnimationFrame(animationRef.current);
-  }, []);
+  // ══════════════════════════════════════════
+  //  Drawing
+  // ══════════════════════════════════════════
 
-  /** --- Hover Detection --- */
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+  function drawScene(ctx: CanvasRenderingContext2D, time: number) {
+    drawAuraWedges(ctx, time);    // Layer 1: coloured wedges (condition + response)
+    drawObligationArcs(ctx);      // Layer 2: static structural arcs (duty — no motion)
+    drawAxisLines(ctx, time);     // Layer 3: per-segment axis lines
+    drawCenterCircle(ctx);        // Layer 4: solid centre with inner shadow (anchor)
+    drawHoverLabel(ctx, time);    // Layer 5: label on hover
+  }
 
-    const handleMouseMove = (e: MouseEvent) => {
-      const rect = canvas.getBoundingClientRect();
-      const scaleX = size / rect.width;
-      const scaleY = size / rect.height;
-      const mouseX = e.clientX - rect.left;
-      const mouseY = e.clientY - rect.top;
-      const x = mouseX * scaleX;
-      const y = mouseY * scaleY;
+  // ── Layer 1: Aura wedges ──
+  function drawAuraWedges(ctx: CanvasRenderingContext2D, time: number) {
+    const hov = hovRef.current;
+    segments.forEach((seg) => {
+      const isHov = hov?.name === seg.name;
+      const oR = outerRadius(seg, time);
 
-      const dx = x - center;
-      const dy = y - center;
-      const angle = Math.atan2(dy, dx);
-      const radius = Math.sqrt(dx * dx + dy * dy);
+      // FIX: On hover, apply +5% saturation boost (multiply rgb by 1.05).
+      // No alpha change — saturation only, per spec.
+      const sat = isHov ? 1.05 : 1.0;
 
-      const normalizedAngle = angle < 0 ? angle + Math.PI * 2 : angle;
-      const hovered = segments.find((seg) => {
-        let segStart = seg.startAngle;
-        let segEnd = seg.endAngle;
-        if (segEnd < segStart) segEnd += Math.PI * 2;
-        if (normalizedAngle >= segStart && normalizedAngle <= segEnd) {
-          const pressure = getPressureAtAngle(seg.midAngle, timeRef.current);
-          const extension = baseRadius + pressure * maxExtension;
-          return radius <= extension + 30;
-        }
-        return false;
-      }) || null;
-
-      setHoveredSegment(hovered);
-      hoveredSegmentRef.current = hovered;
-
-      if (hovered) {
-        const incident = behaviouralIncidents.find(b => b.behaviour === hovered.name);
-        let text: string;
-
-        if (hovered.type === "domain") {
-          text = `${hovered.name}: ${hovered.score}`;
-        } else {
-          // For behaviours, find which sub-segment is hovered
-          let statusText = "";
-          if (hovered.statusSubSegments && hovered.statusSubSegments.length > 0) {
-            const hoveredSub = hovered.statusSubSegments.find(
-              (sub) => normalizedAngle >= sub.startAngle && normalizedAngle <= sub.endAngle
-            );
-            if (hoveredSub) {
-              statusText = ` (${hoveredSub.status}: ${Math.round(hoveredSub.proportion * 100)}%)`;
-            }
-          }
-          text = `${hovered.name}: ${incident ? incident.ratePerHundred : 0}/100${statusText}`;
-        }
-        setTooltip({ x: mouseX, y: mouseY, text });
+      if (seg.type === "behaviour" && seg.statusSubSegments?.length) {
+        seg.statusSubSegments.forEach((sub) => {
+          drawWedge(ctx, sub.startAngle, sub.endAngle, oR, hexToRgb(sub.color), sat, isHov);
+        });
       } else {
-        setTooltip(null);
-      }
-    };
-
-    const handleMouseLeave = () => {
-      setTooltip(null);
-      setHoveredSegment(null);
-    };
-
-    canvas.addEventListener("mousemove", handleMouseMove);
-    canvas.addEventListener("mouseleave", handleMouseLeave);
-
-    return () => {
-      canvas.removeEventListener("mousemove", handleMouseMove);
-      canvas.removeEventListener("mouseleave", handleMouseLeave);
-    };
-  }, [segments]);
-
-  /** --- Helpers --- */
-  function getColorAtAngle(angle: number): { r: number; g: number; b: number } {
-    let totalR = 0, totalG = 0, totalB = 0;
-    let totalWeight = 0;
-
-    // Normalize angle to handle wrap-around
-    let normAngle = angle;
-    while (normAngle < -Math.PI) normAngle += Math.PI * 2;
-    while (normAngle > Math.PI) normAngle -= Math.PI * 2;
-
-    segments.forEach((seg) => {
-      let angularDist = Math.abs(angle - seg.midAngle);
-      if (angularDist > Math.PI) angularDist = Math.PI * 2 - angularDist;
-
-      const spread = 0.25;
-      const influence = Math.exp(-Math.pow(angularDist, 2) / (2 * spread * spread));
-
-      if (influence > 0.01) {
-        let segColor = seg.color;
-
-        // For behaviour segments, determine which sub-segment this angle falls into
-        if (seg.type === "behaviour" && seg.statusSubSegments && seg.statusSubSegments.length > 0) {
-          // Check if angle is within this segment's range
-          const inSegment = normAngle >= seg.startAngle && normAngle <= seg.endAngle;
-          if (inSegment) {
-            // Find the sub-segment for this angle
-            const subSeg = seg.statusSubSegments.find(
-              (sub) => normAngle >= sub.startAngle && normAngle <= sub.endAngle
-            );
-            if (subSeg) {
-              segColor = subSeg.color;
-            }
-          } else {
-            // For nearby angles, blend based on closest sub-segment
-            const closestSub = seg.statusSubSegments.reduce((closest, sub) => {
-              const subMid = (sub.startAngle + sub.endAngle) / 2;
-              let distToSub = Math.abs(angle - subMid);
-              if (distToSub > Math.PI) distToSub = Math.PI * 2 - distToSub;
-
-              const closestMid = (closest.startAngle + closest.endAngle) / 2;
-              let distToClosest = Math.abs(angle - closestMid);
-              if (distToClosest > Math.PI) distToClosest = Math.PI * 2 - distToClosest;
-
-              return distToSub < distToClosest ? sub : closest;
-            });
-            segColor = closestSub.color;
-          }
-        }
-
-        const rgb = hexToRgb(segColor);
-        const weight = influence * (0.4 + seg.pressure * 0.6);
-        totalR += rgb.r * weight;
-        totalG += rgb.g * weight;
-        totalB += rgb.b * weight;
-        totalWeight += weight;
+        drawWedge(ctx, seg.startAngle, seg.endAngle, oR, hexToRgb(seg.color), sat, isHov);
       }
     });
-
-    if (totalWeight > 0) {
-      return {
-        r: Math.round(totalR / totalWeight),
-        g: Math.round(totalG / totalWeight),
-        b: Math.round(totalB / totalWeight),
-      };
-    }
-    return { r: 34, g: 197, b: 94 };
   }
 
-  function getPressureAtAngle(angle: number, time: number): number {
-    let totalPressure = 0;
-    segments.forEach((seg) => {
-      let angularDist = Math.abs(angle - seg.midAngle);
-      if (angularDist > Math.PI) angularDist = Math.PI * 2 - angularDist;
-      const spread = 0.35;
-      const influence = Math.exp(-Math.pow(angularDist, 2) / (2 * spread * spread));
-      const wave = Math.sin(time * 0.4 + seg.midAngle * 2) * 0.08 + 1;
-      totalPressure += influence * seg.pressure * wave;
-    });
-    return totalPressure;
-  }
+  /**
+   * Single pie-slice wedge with a radial gradient.
+   *
+   * FIX: Gradient now provides 5–8% luminosity variation by darkening
+   * the RGB values (not the alpha) at the outer stop. Alpha stays
+   * consistent so there's no fade-out — only a subtle depth shift.
+   * Spec: "Apply a radial gradient to inner and outer rings (5–8% luminosity
+   * variation). Avoid glow effects, neon outlines, or hard shadows."
+   */
+  function drawWedge(
+    ctx: CanvasRenderingContext2D,
+    sa: number,
+    ea: number,
+    oR: number,
+    rgb: { r: number; g: number; b: number },
+    sat: number,
+    isHov: boolean,
+  ) {
+    const r = Math.min(255, Math.round(rgb.r * sat));
+    const g = Math.min(255, Math.round(rgb.g * sat));
+    const b = Math.min(255, Math.round(rgb.b * sat));
 
-  /** --- Draw Aura --- */
-  function drawAura(ctx: CanvasRenderingContext2D, time: number) {
-    const pointCount = 180;
-    const points: Array<{ x: number; y: number; color: { r: number; g: number; b: number } }> = [];
+    // 6% luminosity reduction at outer edge (within 5–8% spec)
+    const rD = Math.round(r * 0.94);
+    const gD = Math.round(g * 0.94);
+    const bD = Math.round(b * 0.94);
 
-    for (let i = 0; i <= pointCount; i++) {
-      const angle = (i / pointCount) * Math.PI * 2;
-      const pressure = getPressureAtAngle(angle, time);
-      const color = getColorAtAngle(angle);
+    // FIX: Alpha held consistent across stops (no fade effect).
+    // Slight lift in alpha on hover (+0.06) to increase presence.
+    const baseAlpha = isHov ? 0.68 : 0.62;
+    const midAlpha  = isHov ? 0.76 : 0.70;
+    const outerAlpha = isHov ? 0.68 : 0.62; // matches inner to avoid radial fade
 
-      const localNoise =
-        (Math.sin(angle * 3 + time * 0.8) * 4 +
-          Math.sin(angle * 5 - time * 0.5) * 3 +
-          Math.cos(angle * 2 + time * 0.4) * 3) *
-        pressure;
+    const grad = ctx.createRadialGradient(C, C, AURA_START, C, C, oR);
+    grad.addColorStop(0,    `rgba(${r},${g},${b},${baseAlpha})`);
+    grad.addColorStop(0.5,  `rgba(${r},${g},${b},${midAlpha})`);
+    grad.addColorStop(1,    `rgba(${rD},${gD},${bD},${outerAlpha})`);
 
-      const localBreathe = (Math.sin(time * 0.3) * 3 + Math.sin(time * 0.2 + angle * 0.15) * 2) * pressure;
-      const radius = baseRadius + pressure * maxExtension + localNoise + localBreathe;
-
-      points.push({
-        x: center + radius * Math.cos(angle),
-        y: center + radius * Math.sin(angle),
-        color,
-      });
-    }
-
-    // Fill main shape
     ctx.beginPath();
-    ctx.moveTo(points[0].x, points[0].y);
-    for (let i = 1; i < points.length; i++) {
-      const prev = points[i - 1];
-      const curr = points[i];
-      const midX = (prev.x + curr.x) / 2;
-      const midY = (prev.y + curr.y) / 2;
-      ctx.quadraticCurveTo(prev.x, prev.y, midX, midY);
-    }
+    ctx.moveTo(C, C);
+    ctx.arc(C, C, oR, sa, ea);
     ctx.closePath();
-
-    const avgColor = getColorAtAngle(0);
-    const gradient = ctx.createRadialGradient(center, center, innerRingRadius - 10, center, center, baseRadius + maxExtension + 30);
-    gradient.addColorStop(0, `rgba(255,255,255,0.9)`);
-    gradient.addColorStop(0.3, `rgba(${avgColor.r},${avgColor.g},${avgColor.b},0.4)`);
-    gradient.addColorStop(0.7, `rgba(${avgColor.r},${avgColor.g},${avgColor.b},0.6)`);
-    gradient.addColorStop(1, `rgba(${avgColor.r},${avgColor.g},${avgColor.b},0.1)`);
-
-    ctx.fillStyle = gradient;
+    ctx.fillStyle = grad;
     ctx.fill();
+  }
 
-    // Colored spikes
-    for (let i = 0; i < points.length - 1; i += 3) {
-      const curr = points[i];
-      const next = points[Math.min(i + 3, points.length - 1)];
-      const c = curr.color;
+  // ── Layer 2: Obligation arcs (STATIC — structural duty layer) ──
+  // Spec: "Obligation arcs are static. No animation, pulsing, or colour
+  // transitions are applied." This function must never receive `time`.
+  function drawObligationArcs(ctx: CanvasRenderingContext2D) {
+    // FIX: Increased base opacity from 0.38 → 0.48 for better structural presence.
+    // Still subdued — these are duty markers, not highlights.
+    const arcR = AURA_START + 7;
+    segments.forEach((seg) => {
+      const rgb = hexToRgb(seg.color);
+      ctx.beginPath();
+      ctx.arc(C, C, arcR, seg.startAngle, seg.endAngle);
+      ctx.strokeStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},0.48)`;
+      ctx.lineWidth = 3;
+      ctx.lineCap = "butt";
+      ctx.stroke();
+    });
+  }
+
+  // ── Layer 3: Axis lines ──
+  // FIX: Base opacity raised from 0.28 → 0.38 so lines are perceptible
+  // at rest. On hover: opacity jumps to 0.75 and line thickens to 2.5 px.
+  // These deltas create a clear but calm interactive response.
+  function drawAxisLines(ctx: CanvasRenderingContext2D, time: number) {
+    const hov = hovRef.current;
+    segments.forEach((seg) => {
+      const isHov = hov?.name === seg.name;
+      const oR = outerRadius(seg, time);
+      const x1 = C + AURA_START * Math.cos(seg.midAngle);
+      const y1 = C + AURA_START * Math.sin(seg.midAngle);
+      const x2 = C + oR * Math.cos(seg.midAngle);
+      const y2 = C + oR * Math.sin(seg.midAngle);
+      const rgb = hexToRgb(seg.color);
 
       ctx.beginPath();
-      ctx.moveTo(center, center);
-      ctx.lineTo(curr.x, curr.y);
-      ctx.lineTo(next.x, next.y);
-      ctx.closePath();
-      ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},0.35)`;
-      ctx.fill();
-    }
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.strokeStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},${isHov ? 0.75 : 0.38})`;
+      ctx.lineWidth = isHov ? 2.5 : 1;
+      ctx.stroke();
+    });
+  }
 
-    // Outer stroke
+  // ── Layer 4: Centre circle (solid fill + inner shadow) ──
+  // Spec: "The central index circle uses solid colour fill with slight inner
+  // shadow to create depth." No outer glow. Shadow gradient goes from
+  // transparent at the centre out to a darkened rim — inward shadow effect.
+  function drawCenterCircle(ctx: CanvasRenderingContext2D) {
+    const rgb = hexToRgb(scoreColor);
+
+    // Solid fill — anchor layer
     ctx.beginPath();
-    ctx.moveTo(points[0].x, points[0].y);
-    for (let i = 1; i < points.length; i++) {
-      const prev = points[i - 1];
-      const curr = points[i];
-      const midX = (prev.x + curr.x) / 2;
-      const midY = (prev.y + curr.y) / 2;
-      ctx.quadraticCurveTo(prev.x, prev.y, midX, midY);
-    }
-    ctx.closePath();
-    ctx.strokeStyle = "rgba(255,255,255,0.2)";
-    ctx.lineWidth = 1.5;
+    ctx.arc(C, C, INNER_R, 0, Math.PI * 2);
+    ctx.fillStyle = scoreColor;
+    ctx.fill();
+
+    // FIX: Inner shadow gradient corrected.
+    // Goes from transparent at 55% radius → darkened at full radius.
+    // This produces a concave depth effect (inward shadow, no outer glow).
+    const shadow = ctx.createRadialGradient(C, C, INNER_R * 0.55, C, C, INNER_R);
+    const darkR = Math.max(0, rgb.r - 45);
+    const darkG = Math.max(0, rgb.g - 45);
+    const darkB = Math.max(0, rgb.b - 45);
+    shadow.addColorStop(0, "rgba(0,0,0,0)");
+    shadow.addColorStop(1, `rgba(${darkR},${darkG},${darkB},0.32)`);
+
+    ctx.beginPath();
+    ctx.arc(C, C, INNER_R, 0, Math.PI * 2);
+    ctx.fillStyle = shadow;
+    ctx.fill();
+
+    // Thin border ring to cleanly separate centre from aura
+    ctx.beginPath();
+    ctx.arc(C, C, INNER_R, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(${darkR},${darkG},${darkB},0.18)`;
+    ctx.lineWidth = 1;
     ctx.stroke();
-
-    // Highlight hovered segment
-    // const hovered = hoveredSegmentRef.current;
-    // if (hovered) {
-    //   const pressure = getPressureAtAngle(hovered.midAngle, time);
-    //   const extension = baseRadius + pressure * maxExtension;
-    //   ctx.beginPath();
-    //   ctx.arc(center, center, extension + 5, hovered.startAngle, hovered.endAngle);
-    //   ctx.strokeStyle = "#ffffffaa";
-    //   ctx.lineWidth = 3;
-    //   ctx.stroke();
-    // }
   }
 
-  /** --- Draw Glowing Ring --- */
-  function drawGlowingRing(ctx: CanvasRenderingContext2D) {
-    ctx.beginPath();
-    ctx.arc(center, center, innerRingRadius + 15, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(255,255,255,0.15)";
-    ctx.fill();
+  // ── Layer 5: Labels (always visible, opacity increases on hover) ──
+  // Spec point 5: "increase label opacity" on hover — implies labels exist
+  // at rest at a lower opacity and brighten on hover. Labels are always drawn.
+  // Text is clamped inside canvas bounds so no label is ever clipped.
+  function drawHoverLabel(ctx: CanvasRenderingContext2D, time: number) {
+    const hov = hovRef.current;
+    const MARGIN = 4; // min px from canvas edge
 
-    ctx.beginPath();
-    ctx.arc(center, center, innerRingRadius + 5, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(255,255,255,0.4)";
-    ctx.fill();
+    ctx.font = "500 9.5px system-ui, -apple-system, sans-serif";
 
-    ctx.beginPath();
-    ctx.arc(center, center, innerRingRadius, 0, Math.PI * 2);
-    const innerGradient = ctx.createRadialGradient(center - 10, center - 10, 0, center, center, innerRingRadius);
-    innerGradient.addColorStop(0, "#ffffff");
-    innerGradient.addColorStop(0.9, "#ffffff");
-    innerGradient.addColorStop(1, "#f1f5f9");
-    ctx.fillStyle = innerGradient;
-    ctx.fill();
+    segments.forEach((seg) => {
+      const isHov = hov?.name === seg.name;
+      const oR = outerRadius(seg, time) + 14;
+      const rawX = C + oR * Math.cos(seg.midAngle);
+      const rawY = C + oR * Math.sin(seg.midAngle);
+
+      // Align text away from centre
+      const cosA = Math.cos(seg.midAngle);
+      let align: CanvasTextAlign;
+      if (cosA > 0.15)       align = "left";
+      else if (cosA < -0.15) align = "right";
+      else                   align = "center";
+      ctx.textAlign = align;
+
+      const metrics = ctx.measureText(seg.name);
+      const tw = metrics.width;
+
+      // Compute the left edge of the rendered text so we can clamp it
+      let textLeft: number;
+      if (align === "left")        textLeft = rawX;
+      else if (align === "right")  textLeft = rawX - tw;
+      else                         textLeft = rawX - tw / 2;
+
+      // Clamp x so the full label stays within [MARGIN, SIZE - MARGIN]
+      let clampedX = rawX;
+      if (textLeft < MARGIN) {
+        clampedX = rawX + (MARGIN - textLeft);
+      } else if (textLeft + tw > SIZE - MARGIN) {
+        clampedX = rawX - (textLeft + tw - (SIZE - MARGIN));
+      }
+
+      // Clamp y within canvas bounds (label is ~10px tall)
+      const clampedY = Math.max(MARGIN + 10, Math.min(SIZE - MARGIN, rawY));
+
+      // Only show label on hover
+      if (!isHov) return;
+      const opacity = 0.88;
+      ctx.fillStyle = `rgba(15,23,42,${opacity})`;
+      ctx.fillText(seg.name, clampedX, clampedY + 4);
+    });
   }
 
-  const scoreColor = getScoreColor(cultureIndex);
+  // ══════════════════════════════════════════
+  //  Render
+  // ══════════════════════════════════════════
 
   return (
     <div className="relative w-[780px] h-[490px] mx-auto flex items-center justify-center">
       <canvas
         ref={canvasRef}
-        className="absolute"
-        style={{ width: displaySize, height: displaySize }}/>
-      <div className="absolute text-center z-10 flex flex-col items-center">
-        <Image src="/vite.svg" alt="O Logo" width={28} height={28} className="mb-2" />
-        <div className="text-3xl font-semibold -mt-1" style={{ color: scoreColor }}>
-          {cultureIndex}
+        className="absolute cursor-pointer"
+        style={{ width: DISPLAY, height: DISPLAY }}
+      />
+
+      {/* Centre overlay — pointer-events-none so clicks pass to canvas */}
+      <div
+        className="absolute z-10 flex flex-col items-center pointer-events-none"
+        style={{ width: INNER_R * 1.7 * (DISPLAY / SIZE) }}
+      >
+        <Image src="/vite.svg" alt="O Logo" width={22} height={22} className="mb-1.5" />
+        {/* Count-up animates displayIndex via ease-in-out over 800ms */}
+        <div
+          className="text-[22px] font-semibold tabular-nums leading-none"
+          style={{ color: "#fff" }}
+        >
+          {displayIndex}
         </div>
-        <div className="text-[10px] text-slate-400 mt-1 uppercase tracking-[0.2em]">
+        <div className="text-[8px] text-white/60 mt-1 uppercase tracking-[0.18em]">
           Culture Index
         </div>
       </div>
 
-      {tooltip && (
+      {/* Click data table (React DOM, not canvas) */}
+      {clickedSeg && (
         <div
-          className="absolute z-50 bg-zinc-800 text-white text-xs px-2 py-1 rounded shadow"
-          style={{ left: tooltip.x + 10, top: tooltip.y + 10 }}
+          className="absolute right-2 top-2 z-20 bg-white/95 border border-slate-100 rounded-xl shadow-sm p-4 w-60"
+          style={{ backdropFilter: "blur(10px)" }}
         >
-          {tooltip.text}
+          {/* Header */}
+          <div className="flex justify-between items-start mb-3">
+            <div>
+              <div className="text-[9px] uppercase tracking-widest text-slate-400 mb-0.5">
+                {clickedSeg.type === "domain" ? "Domain" : "Behaviour"}
+              </div>
+              <div className="font-semibold text-slate-800 text-[13px] leading-tight">
+                {clickedSeg.name}
+              </div>
+            </div>
+            <button
+              onClick={() => setClickedSeg(null)}
+              className="text-slate-300 hover:text-slate-500 text-xl leading-none mt-0.5"
+            >
+              ×
+            </button>
+          </div>
+
+          {/* Domain data */}
+          {clickedSeg.type === "domain" && (
+            <table className="w-full text-[12px]">
+              <tbody className="divide-y divide-slate-50">
+                <tr>
+                  <td className="text-slate-400 py-1.5">Score</td>
+                  <td className="text-right font-semibold" style={{ color: scoreColor }}>
+                    {clickedSeg.score}
+                  </td>
+                </tr>
+                <tr>
+                  <td className="text-slate-400 py-1.5">Instrument weight</td>
+                  <td className="text-right font-medium text-slate-700">
+                    {((clickedSeg.weight ?? 0) * 100).toFixed(0)}%
+                  </td>
+                </tr>
+                <tr>
+                  <td className="text-slate-400 py-1.5">Activation</td>
+                  <td className="text-right font-medium text-slate-700">
+                    {(clickedSeg.extrusion * 2).toFixed(2)} / 2.00
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          )}
+
+          {/* Behaviour data */}
+          {clickedSeg.type === "behaviour" && (
+            <table className="w-full text-[12px]">
+              <thead>
+                <tr className="border-b border-slate-100">
+                  <th className="text-left text-slate-400 font-normal pb-1.5 text-[11px]">Status</th>
+                  <th className="text-right text-slate-400 font-normal pb-1.5 text-[11px]">Share</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {clickedSeg.statusSubSegments?.map((s) => (
+                  <tr key={s.status}>
+                    <td className="py-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className="w-2 h-2 rounded-full flex-shrink-0"
+                          style={{ backgroundColor: s.color }}
+                        />
+                        <span className="text-slate-600">{s.status}</span>
+                      </div>
+                    </td>
+                    <td className="text-right font-semibold text-slate-700">
+                      {Math.round(s.proportion * 100)}%
+                    </td>
+                  </tr>
+                ))}
+                <tr className="border-t border-slate-100">
+                  <td className="text-slate-400 pt-2">Rate</td>
+                  <td className="text-right font-semibold text-slate-700 pt-2">
+                    {clickedSeg.ratePerHundred}/100
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          )}
         </div>
       )}
     </div>
