@@ -493,118 +493,127 @@ export default function CultureAura() {
   // ══════════════════════════════════════════
 
   return (
-    <div ref={containerRef} className="relative w-full mx-auto flex items-center justify-center" style={{ height: displaySize }}>
-      <canvas
-        ref={canvasRef}
-        className="absolute cursor-pointer"
-        style={{ width: displaySize, height: displaySize }}
-      />
+    <div ref={containerRef} className="relative w-full flex items-center justify-center" style={{ minHeight: displaySize }}>
 
-      {/* Centre overlay — pointer-events-none so clicks pass to canvas */}
-      <div
-        className="absolute z-10 flex flex-col items-center pointer-events-none"
-        style={{ width: INNER_R * 1.7 * (displaySize / SIZE) }}
-      >
-        <Image src="/vite.svg" alt="O Logo" width={22} height={22} className="mb-1.5" />
-        {/* Count-up animates displayIndex via ease-in-out over 800ms */}
-        <div
-          className="text-[22px] font-semibold tabular-nums leading-none"
-          style={{ color: "#1a1a1a" }}
-        >
-          {displayIndex}
+      {/* Chart canvas zone — always centered, table never affects its position */}
+      <div className="relative" style={{ width: displaySize, height: displaySize }}>
+
+        <canvas
+          ref={canvasRef}
+          className="absolute inset-0 cursor-pointer"
+          style={{ width: displaySize, height: displaySize }}
+        />
+
+        {/* Centre overlay — pointer-events-none so clicks pass through to canvas */}
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center pointer-events-none">
+          <div style={{ width: INNER_R * 1.7 * (displaySize / SIZE) }} className="flex flex-col items-center">
+            <Image src="/vite.svg" alt="O Logo" width={22} height={22} className="mb-1.5" />
+            <div
+              className="text-[22px] font-semibold tabular-nums leading-none"
+              style={{ color: "#1a1a1a" }}
+            >
+              {displayIndex}
+            </div>
+            <div className="text-[8px] text-black/60 mt-1 uppercase tracking-[0.18em]">
+              Culture Index
+            </div>
+          </div>
         </div>
-        <div className="text-[8px] text-black/60 mt-1 uppercase tracking-[0.18em]">
-          Culture Index
-        </div>
+
       </div>
 
-      {/* Click data table (React DOM, not canvas) */}
+      {/* Detail table — absolute so it never shifts the chart; left edge = chart right edge + 8px */}
       {clickedSeg && (
         <div
-          className="absolute right-2 top-2 z-20 bg-white/95 border border-slate-100 rounded-xl shadow-sm p-4 w-60"
-          style={{ backdropFilter: "blur(10px)" }}
+          className="absolute z-20 bg-white/95 border border-slate-100 rounded-xl shadow-sm p-4 w-60"
+          style={{
+            left: `calc(50% + ${displaySize / 2 + 8}px)`,
+            top: "8px",
+            backdropFilter: "blur(10px)",
+          }}
         >
-          {/* Header */}
-          <div className="flex justify-between items-start mb-3">
-            <div>
-              <div className="text-[9px] uppercase tracking-widest text-slate-400 mb-0.5">
-                {clickedSeg.type === "domain" ? "Domain" : "Behaviour"}
+            {/* Header */}
+            <div className="flex justify-between items-start mb-3">
+              <div>
+                <div className="text-[9px] uppercase tracking-widest text-slate-400 mb-0.5">
+                  {clickedSeg.type === "domain" ? "Domain" : "Behaviour"}
+                </div>
+                <div className="font-semibold text-slate-800 text-[13px] leading-tight">
+                  {clickedSeg.name}
+                </div>
               </div>
-              <div className="font-semibold text-slate-800 text-[13px] leading-tight">
-                {clickedSeg.name}
-              </div>
+              <button
+                onClick={() => setClickedSeg(null)}
+                className="text-slate-300 hover:text-slate-500 text-xl leading-none mt-0.5"
+              >
+                ×
+              </button>
             </div>
-            <button
-              onClick={() => setClickedSeg(null)}
-              className="text-slate-300 hover:text-slate-500 text-xl leading-none mt-0.5"
-            >
-              ×
-            </button>
-          </div>
 
-          {/* Domain data */}
-          {clickedSeg.type === "domain" && (
-            <table className="w-full text-[12px]">
-              <tbody className="divide-y divide-slate-50">
-                <tr>
-                  <td className="text-slate-400 py-1.5">Score</td>
-                  <td className="text-right font-semibold" style={{ color: scoreColor }}>
-                    {clickedSeg.score}
-                  </td>
-                </tr>
-                <tr>
-                  <td className="text-slate-400 py-1.5">Instrument weight</td>
-                  <td className="text-right font-medium text-slate-700">
-                    {((clickedSeg.weight ?? 0) * 100).toFixed(0)}%
-                  </td>
-                </tr>
-                <tr>
-                  <td className="text-slate-400 py-1.5">Activation</td>
-                  <td className="text-right font-medium text-slate-700">
-                    {(clickedSeg.extrusion * 2).toFixed(2)} / 2.00
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          )}
-
-          {/* Behaviour data */}
-          {clickedSeg.type === "behaviour" && (
-            <table className="w-full text-[12px]">
-              <thead>
-                <tr className="border-b border-slate-100">
-                  <th className="text-left text-slate-400 font-normal pb-1.5 text-[11px]">Status</th>
-                  <th className="text-right text-slate-400 font-normal pb-1.5 text-[11px]">Share</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-50">
-                {clickedSeg.statusSubSegments?.map((s) => (
-                  <tr key={s.status}>
-                    <td className="py-1.5">
-                      <div className="flex items-center gap-1.5">
-                        <span
-                          className="w-2 h-2 rounded-full flex-shrink-0"
-                          style={{ backgroundColor: s.color }}
-                        />
-                        <span className="text-slate-600">{s.status}</span>
-                      </div>
-                    </td>
-                    <td className="text-right font-semibold text-slate-700">
-                      {Math.round(s.proportion * 100)}%
+            {/* Domain data */}
+            {clickedSeg.type === "domain" && (
+              <table className="w-full text-[12px]">
+                <tbody className="divide-y divide-slate-50">
+                  <tr>
+                    <td className="text-slate-400 py-1.5">Score</td>
+                    <td className="text-right font-semibold" style={{ color: scoreColor }}>
+                      {clickedSeg.score}
                     </td>
                   </tr>
-                ))}
-                <tr className="border-t border-slate-100">
-                  <td className="text-slate-400 pt-2">Rate</td>
-                  <td className="text-right font-semibold text-slate-700 pt-2">
-                    {clickedSeg.ratePerHundred}/100
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          )}
-        </div>
-      )}
+                  <tr>
+                    <td className="text-slate-400 py-1.5">Instrument weight</td>
+                    <td className="text-right font-medium text-slate-700">
+                      {((clickedSeg.weight ?? 0) * 100).toFixed(0)}%
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="text-slate-400 py-1.5">Activation</td>
+                    <td className="text-right font-medium text-slate-700">
+                      {(clickedSeg.extrusion * 2).toFixed(2)} / 2.00
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            )}
+
+            {/* Behaviour data */}
+            {clickedSeg.type === "behaviour" && (
+              <table className="w-full text-[12px]">
+                <thead>
+                  <tr className="border-b border-slate-100">
+                    <th className="text-left text-slate-400 font-normal pb-1.5 text-[11px]">Status</th>
+                    <th className="text-right text-slate-400 font-normal pb-1.5 text-[11px]">Share</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {clickedSeg.statusSubSegments?.map((s) => (
+                    <tr key={s.status}>
+                      <td className="py-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className="w-2 h-2 rounded-full flex-shrink-0"
+                            style={{ backgroundColor: s.color }}
+                          />
+                          <span className="text-slate-600">{s.status}</span>
+                        </div>
+                      </td>
+                      <td className="text-right font-semibold text-slate-700">
+                        {Math.round(s.proportion * 100)}%
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="border-t border-slate-100">
+                    <td className="text-slate-400 pt-2">Rate</td>
+                    <td className="text-right font-semibold text-slate-700 pt-2">
+                      {clickedSeg.ratePerHundred}/100
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+
     </div>
   );
 }
