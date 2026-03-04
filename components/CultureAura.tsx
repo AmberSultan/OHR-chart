@@ -8,7 +8,6 @@ import {
   behaviourStatusMix,
   statusColors,
   calculateCultureIndex,
-  getScoreColor,
 } from "@/lib/data";
 
 // ---- Types ----
@@ -57,9 +56,8 @@ function normaliseAngle(a: number): number {
 
 // ---- Component ----
 
-export default function CultureAura() {
+export default function CultureAura({ showAxisLines = false }: { showAxisLines?: boolean }) {
   const cultureIndex = calculateCultureIndex();
-  const scoreColor = getScoreColor(cultureIndex);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -106,6 +104,27 @@ export default function CultureAura() {
   const AURA_BASE = 152;    // base outer radius (zero extrusion)
   const MAX_EXT = 48;       // max extrusion pixels (represents "+2 units")
 
+  // ── Color palette ──
+  const BLOB_GRAY = "#d3d0a5"; // warm gray — slight rose-beige undertone
+
+  // Domain ring — #F89E80 salmon, light → dark
+  const DOMAIN_COLORS = [
+    "#FEF0EB", // salmon-50
+    "#FDDFD5", // salmon-100
+    "#FBCAB8", // salmon-200
+    "#FAB49B", // salmon-250
+    "#F9A08E", // salmon-300
+    "#F89E80", // salmon-base
+    "#F68A69", // salmon-500
+    "#F47553", // salmon-550
+    "#F2603C", // salmon-600
+    "#E85530", // salmon-650
+    "#D44A27", // salmon-700
+    "#BF401F", // salmon-750
+    "#A83618", // salmon-800
+    "#8C2C12", // salmon-900
+  ];
+
   // ── Build segments ──
   const totalItems = cultureDomains.length + behaviouralIncidents.length;
   const segW = (Math.PI * 2) / totalItems;
@@ -125,7 +144,7 @@ export default function CultureAura() {
       endAngle: ea,
       midAngle: (sa + ea) / 2,
       extrusion: ext,
-      color: getScoreColor(d.score),
+      color: DOMAIN_COLORS[si % DOMAIN_COLORS.length],
       score: d.score,
       weight: d.weight,
     });
@@ -151,7 +170,7 @@ export default function CultureAura() {
       ca = subEa;
       return {
         status: s.status,
-        color: statusColors[s.status] || "#94a3b8",
+        color: statusColors[s.status] || "#F89E80",
         proportion: prop,
         startAngle: subSa,
         endAngle: subEa,
@@ -163,7 +182,7 @@ export default function CultureAura() {
       statusArr.length > 0
         ? statusArr.reduce((a, x) => (x.proportion > a.proportion ? x : a))
         : null;
-    const domCol = dominant ? statusColors[dominant.status] || "#94a3b8" : "#94a3b8";
+    const domCol = dominant ? statusColors[dominant.status] || "#F89E80" : "#F89E80";
 
     segments.push({
       name: b.behaviour,
@@ -270,11 +289,26 @@ export default function CultureAura() {
   // ══════════════════════════════════════════
 
   function drawScene(ctx: CanvasRenderingContext2D, time: number) {
-    drawAuraWedges(ctx, time);    // Layer 1: coloured wedges (condition + response)
-    drawObligationArcs(ctx);      // Layer 2: static structural arcs (duty — no motion)
-    drawAxisLines(ctx, time);     // Layer 3: per-segment axis lines
-    drawCenterCircle(ctx, time);  // Layer 4: solid centre with inner shadow (anchor)
-    drawHoverLabel(ctx, time);    // Layer 5: label on hover
+    drawAuraWedges(ctx, time);                        // Layer 1: coloured wedges (condition + response)
+    drawInnerRing(ctx);                               // Layer 2: grey ring between blob and obligation arc
+    drawObligationArcs(ctx);                          // Layer 3: static structural arcs (duty — no motion)
+    if (showAxisLines) drawAxisLines(ctx, time);      // Layer 4: per-segment axis lines (optional)
+    drawCenterCircle(ctx, time);                      // Layer 5: solid centre with inner shadow (anchor)
+    drawHoverLabel(ctx, time);                        // Layer 6: label on hover
+  }
+
+  // ── Layer 2: Inner ring (outside blob, inside obligation arc) ──
+  function drawInnerRing(ctx: CanvasRenderingContext2D) {
+    const outerEdge = AURA_START + 7; // matches obligation arc radius (107)
+    const innerEdge = INNER_R - 4;    // slightly inside blob edge so blob covers seam
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(C, C, outerEdge, 0, Math.PI * 2, false); // outer boundary
+    ctx.arc(C, C, innerEdge, 0, Math.PI * 2, true);  // inner hole (counter-clockwise)
+    ctx.fillStyle = "#FDDFD5";
+    ctx.fill("evenodd");
+    ctx.restore();
   }
 
   // ── Layer 1: Aura wedges ──
@@ -391,7 +425,7 @@ export default function CultureAura() {
   // shadow to create depth." No outer glow. Shadow gradient goes from
   // transparent at the centre out to a darkened rim — inward shadow effect.
   function drawCenterCircle(ctx: CanvasRenderingContext2D, time: number) {
-    const rgb = hexToRgb(scoreColor);
+    const rgb = hexToRgb(BLOB_GRAY);
     const darkR = Math.max(0, rgb.r - 45);
     const darkG = Math.max(0, rgb.g - 45);
     const darkB = Math.max(0, rgb.b - 45);
@@ -418,7 +452,7 @@ export default function CultureAura() {
 
     // Solid fill
     blobPath();
-    ctx.fillStyle = scoreColor;
+    ctx.fillStyle = BLOB_GRAY;
     ctx.fill();
 
     // Inner shadow for depth
@@ -483,7 +517,7 @@ export default function CultureAura() {
       // Only show label on hover
       if (!isHov) return;
       const opacity = 0.88;
-      ctx.fillStyle = `rgba(15,23,42,${opacity})`;
+      ctx.fillStyle = `rgba(243,232,255,${opacity})`; // purple-50 — light
       ctx.fillText(seg.name, clampedX, clampedY + 4);
     });
   }
@@ -556,7 +590,7 @@ export default function CultureAura() {
                 <tbody className="divide-y divide-slate-50">
                   <tr>
                     <td className="text-slate-400 py-1.5">Score</td>
-                    <td className="text-right font-semibold" style={{ color: scoreColor }}>
+                    <td className="text-right font-semibold" style={{ color: "#A83618" }}>
                       {clickedSeg.score}
                     </td>
                   </tr>

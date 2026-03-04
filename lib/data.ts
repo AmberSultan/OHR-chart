@@ -35,11 +35,11 @@ export const behaviourStatusMix = [
 ];
 
 export const statusColors: Record<string, string> = {
-  Reported: "#FFB74D",
-  Investigating: "#9575CD",
-  Substantiated: "#FF7043",
-  "Partially Substantiated": "#F06292",
-  Unsubstantiated: "#81C784",
+  Reported: "#FDDFD5",                   // salmon-100 — lightest
+  Investigating: "#F89E80",              // salmon-base
+  Substantiated: "#D44A27",             // salmon-700 — darkest
+  "Partially Substantiated": "#F2603C", // salmon-600
+  Unsubstantiated: "#FBCAB8",           // salmon-200
 };
 
 export function getScoreColor(score: number): string {
