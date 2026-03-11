@@ -7,7 +7,9 @@ import {
   behaviouralIncidents,
   behaviourStatusMix,
   statusColors,
+  sourceRecords,
   calculateCultureIndex,
+  type SourceRecord,
 } from "@/lib/data";
 
 // ---- Types ----
@@ -23,6 +25,7 @@ interface StatusSubSegment {
 interface AuraSegment {
   name: string;
   type: "domain" | "behaviour";
+  description?: string;
   startAngle: number;
   endAngle: number;
   midAngle: number;
@@ -64,7 +67,9 @@ export default function CultureAura({ showAxisLines = false }: { showAxisLines?:
   const animRef = useRef<number>(0);
   const timeRef = useRef<number>(0);
   /** Ref-based so the animation loop always reads the latest value without re-renders */
-  const hovRef = useRef<AuraSegment | null>(null);
+  const hovRef    = useRef<AuraSegment | null>(null);
+  /** Which obligation arc is currently hovered (null | "psych" | "posduty") */
+  const hovArcRef = useRef<"psych" | "posduty" | null>(null);
 
   const [displayIndex, setDisplayIndex] = useState(0);
   const [clickedSeg, setClickedSeg] = useState<AuraSegment | null>(null);
@@ -104,8 +109,17 @@ export default function CultureAura({ showAxisLines = false }: { showAxisLines?:
   const AURA_BASE = 152;    // base outer radius (zero extrusion)
   const MAX_EXT = 48;       // max extrusion pixels (represents "+2 units")
 
-  // ── Color palette ──
-  const BLOB_GRAY = "#d3d0a5"; // warm gray — slight rose-beige undertone
+  // ── Obligation arc geometry — hoisted so onMove can do hit-testing ──
+  const OBL_GAP       = 6;
+  const OBL_THICKNESS = 13;   // 5.2% of chart radius (250) — within 5–8% spec
+  const OBL_SPACING   = 3;
+  const OBL1_INNER = AURA_BASE + MAX_EXT + OBL_GAP;   // 206
+  const OBL1_OUTER = OBL1_INNER + OBL_THICKNESS;      // 219
+  const OBL2_INNER = OBL1_OUTER + OBL_SPACING;        // 222
+  const OBL2_OUTER = OBL2_INNER + OBL_THICKNESS;      // 235
+
+  // ── FIX #2: Centre colour aligned to warm salmon palette (was olive #d3d0a5) ──
+  const CENTER_COLOR = "#F89E80"; // salmon-base — warm, grounds the palette
 
   // Domain ring — #F89E80 salmon, light → dark
   const DOMAIN_COLORS = [
@@ -135,11 +149,11 @@ export default function CultureAura({ showAxisLines = false }: { showAxisLines?:
   cultureDomains.forEach((d) => {
     const sa = si * segW - Math.PI / 2;
     const ea = (si + 1) * segW - Math.PI / 2;
-    // Bounded extrusion: scope weight +1 base offset, capped to 1 (= MAX_EXT px)
     const ext = Math.min(((100 - d.score) / 100) * (d.weight + 1), 1);
     segments.push({
       name: d.domain,
       type: "domain",
+      description: d.description,
       startAngle: sa,
       endAngle: ea,
       midAngle: (sa + ea) / 2,
@@ -156,7 +170,6 @@ export default function CultureAura({ showAxisLines = false }: { showAxisLines?:
     const sa = si * segW - Math.PI / 2;
     const ea = (si + 1) * segW - Math.PI / 2;
     const sw = ea - sa;
-    // Bounded extrusion from event rate, capped to 1
     const ext = Math.min(b.ratePerHundred * 1.5, 1);
 
     const statusArr = behaviourStatusMix.filter((s) => s.behaviour === b.behaviour);
@@ -177,7 +190,6 @@ export default function CultureAura({ showAxisLines = false }: { showAxisLines?:
       };
     });
 
-    // Dominant status colour for axis line
     const dominant =
       statusArr.length > 0
         ? statusArr.reduce((a, x) => (x.proportion > a.proportion ? x : a))
@@ -187,6 +199,7 @@ export default function CultureAura({ showAxisLines = false }: { showAxisLines?:
     segments.push({
       name: b.behaviour,
       type: "behaviour",
+      description: b.description,
       startAngle: sa,
       endAngle: ea,
       midAngle: (sa + ea) / 2,
@@ -204,13 +217,10 @@ export default function CultureAura({ showAxisLines = false }: { showAxisLines?:
     return segments.find((s) => n >= s.startAngle && n < s.endAngle) ?? null;
   }
 
-  // ── Outer radius for a segment ──
-  // FIX: Breathing amplitude reduced to 1.5 px max (breathing-level only).
-  // Speed reduced to time * 0.06 — nearly imperceptible continuous motion,
-  // just enough to feel alive without appearing animated.
-  function outerRadius(seg: AuraSegment, time: number): number {
-    const breath = Math.sin(time * 0.06 + seg.midAngle * 0.5) * 1.5;
-    return AURA_BASE + seg.extrusion * MAX_EXT + breath;
+  // ── FIX #6: Outer radius — static, no radius breathing (brief: no continuous looping motion) ──
+  // Only saturation breathing is allowed as continuous motion (applied in drawAuraWedges).
+  function outerRadius(seg: AuraSegment): number {
+    return AURA_BASE + seg.extrusion * MAX_EXT;
   }
 
   // ── Hover / click event listeners ──
@@ -226,17 +236,43 @@ export default function CultureAura({ showAxisLines = false }: { showAxisLines?:
       };
     };
 
+    // Pre-compute arc angle spans for hit-testing (segments is stable for static data)
+    const arcSpan = (names: string[]) => {
+      const segs = names.map(n => segments.find(s => s.name === n)).filter((s): s is AuraSegment => !!s);
+      if (!segs.length) return null;
+      return { sa: Math.min(...segs.map(s => s.startAngle)), ea: Math.max(...segs.map(s => s.endAngle)) };
+    };
+    const psychSpan    = arcSpan(["Safety","Job Clarity","Job Control","Justice","Relationships","Reward"]);
+    const pdTopSpan    = arcSpan(["Opportunity","Contribution"]);
+    const pdBotSpan    = arcSpan(["Reward","Support","Leadership","Inclusion","Respectful Norms","Trust"]);
+
     const onMove = (e: MouseEvent) => {
       const { x, y } = toCanvas(e);
       const dx = x - C, dy = y - C;
       const r = Math.sqrt(dx * dx + dy * dy);
+
+      // ── Obligation arc hit zone (OBL1_INNER … OBL2_OUTER) ──
+      if (r >= OBL1_INNER && r <= OBL2_OUTER) {
+        const a = normaliseAngle(Math.atan2(dy, dx));
+        const inPsych = r <= OBL1_OUTER && !!psychSpan && a >= psychSpan.sa && a <= psychSpan.ea;
+        const inPd    = r >= OBL2_INNER  && !!pdTopSpan && !!pdBotSpan &&
+                        ((a >= pdTopSpan.sa && a <= pdTopSpan.ea) ||
+                         (a >= pdBotSpan.sa && a <= pdBotSpan.ea));
+        if (inPsych || inPd) {
+          hovArcRef.current = inPsych ? "psych" : "posduty";
+          hovRef.current    = null;
+          return;
+        }
+      }
+
+      hovArcRef.current = null;
       hovRef.current =
         r >= AURA_START && r <= AURA_BASE + MAX_EXT + 18
           ? findSegment(Math.atan2(dy, dx))
           : null;
     };
 
-    const onLeave = () => { hovRef.current = null; };
+    const onLeave = () => { hovRef.current = null; hovArcRef.current = null; };
 
     const onClick = (e: MouseEvent) => {
       const { x, y } = toCanvas(e);
@@ -260,7 +296,7 @@ export default function CultureAura({ showAxisLines = false }: { showAxisLines?:
     };
   }, [segments]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Animation loop ──
+  // ── Animation loop — kept alive for saturation breathing only ──
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -290,44 +326,56 @@ export default function CultureAura({ showAxisLines = false }: { showAxisLines?:
 
   function drawScene(ctx: CanvasRenderingContext2D, time: number) {
     drawAuraWedges(ctx, time);                        // Layer 1: coloured wedges (condition + response)
-    drawInnerRing(ctx);                               // Layer 2: grey ring between blob and obligation arc
-    drawObligationArcs(ctx);                          // Layer 3: static structural arcs (duty — no motion)
+    drawInnerRing(ctx);                               // Layer 2: ring between centre circle and aura
+    drawObligationArcs(ctx);                          // Layer 3: static structural governance bands (duty — no motion)
     if (showAxisLines) drawAxisLines(ctx, time);      // Layer 4: per-segment axis lines (optional)
-    drawCenterCircle(ctx, time);                      // Layer 5: solid centre with inner shadow (anchor)
+    drawCenterCircle(ctx);                            // Layer 5: stable solid centre with inner shadow (anchor)
     drawHoverLabel(ctx, time);                        // Layer 6: label on hover
   }
 
-  // ── Layer 2: Inner ring (outside blob, inside obligation arc) ──
+  // ── Layer 2: Inner ring (outside centre, inside aura) ──
   function drawInnerRing(ctx: CanvasRenderingContext2D) {
-    const outerEdge = AURA_START + 7; // matches obligation arc radius (107)
-    const innerEdge = INNER_R - 4;    // slightly inside blob edge so blob covers seam
+    const outerEdge = AURA_START + 7;
+    const innerEdge = INNER_R - 4;
 
     ctx.save();
     ctx.beginPath();
-    ctx.arc(C, C, outerEdge, 0, Math.PI * 2, false); // outer boundary
-    ctx.arc(C, C, innerEdge, 0, Math.PI * 2, true);  // inner hole (counter-clockwise)
+    ctx.arc(C, C, outerEdge, 0, Math.PI * 2, false);
+    ctx.arc(C, C, innerEdge, 0, Math.PI * 2, true);
     ctx.fillStyle = "#FDDFD5";
     ctx.fill("evenodd");
     ctx.restore();
   }
 
   // ── Layer 1: Aura wedges ──
-  function drawAuraWedges(ctx: CanvasRenderingContext2D, time: number) {
-    const hov = hovRef.current;
-    segments.forEach((seg) => {
-      const isHov = hov?.name === seg.name;
-      const oR = outerRadius(seg, time);
+  // FIX #7: Saturation breathing — gentle ±2.5% global saturation cycle is the
+  // ONLY continuous motion. Radius is static. Brief: "no continuous looping
+  // motion beyond subtle saturation breathing."
+  // Indicators governed by each obligation arc (for hover highlight)
+  const PSYCH_NAMES   = ["Safety","Job Clarity","Job Control","Justice","Relationships","Reward"];
+  const POSDUTY_NAMES = ["Opportunity","Contribution","Reward","Support","Leadership","Inclusion","Respectful Norms","Trust"];
 
-      // FIX: On hover, apply +5% saturation boost (multiply rgb by 1.05).
-      // No alpha change — saturation only, per spec.
-      const sat = isHov ? 1.05 : 1.0;
+  function drawAuraWedges(ctx: CanvasRenderingContext2D, time: number) {
+    const hov    = hovRef.current;
+    const hovArc = hovArcRef.current;
+    // Gentle global saturation breath: ±2.5%, period ≈42s — imperceptible but alive
+    const breathSat = 1.0 + Math.sin(time * 0.15) * 0.025;
+
+    segments.forEach((seg) => {
+      const isHov        = hov?.name === seg.name;
+      const isArcHovered = hovArc === "psych"   ? PSYCH_NAMES.includes(seg.name)
+                         : hovArc === "posduty" ? POSDUTY_NAMES.includes(seg.name)
+                         : false;
+      const oR = outerRadius(seg); // static — no radius pulse
+      // Direct hover +5%; arc hover highlights mapped indicators at +15%; otherwise breathing
+      const sat = isHov ? 1.05 : isArcHovered ? 1.15 : breathSat;
 
       if (seg.type === "behaviour" && seg.statusSubSegments?.length) {
         seg.statusSubSegments.forEach((sub) => {
-          drawWedge(ctx, sub.startAngle, sub.endAngle, oR, hexToRgb(sub.color), sat, isHov);
+          drawWedge(ctx, sub.startAngle, sub.endAngle, oR, hexToRgb(sub.color), sat);
         });
       } else {
-        drawWedge(ctx, seg.startAngle, seg.endAngle, oR, hexToRgb(seg.color), sat, isHov);
+        drawWedge(ctx, seg.startAngle, seg.endAngle, oR, hexToRgb(seg.color), sat);
       }
     });
   }
@@ -335,11 +383,10 @@ export default function CultureAura({ showAxisLines = false }: { showAxisLines?:
   /**
    * Single pie-slice wedge with a radial gradient.
    *
-   * FIX: Gradient now provides 5–8% luminosity variation by darkening
-   * the RGB values (not the alpha) at the outer stop. Alpha stays
-   * consistent so there's no fade-out — only a subtle depth shift.
-   * Spec: "Apply a radial gradient to inner and outer rings (5–8% luminosity
-   * variation). Avoid glow effects, neon outlines, or hard shadows."
+   * FIX #8: Alpha is now fixed across all states. No hover alpha change.
+   * Brief prohibits glow and transparency-based hover effects.
+   * Only saturation shifts on hover (+5%) and at rest (breathing cycle).
+   * Gradient provides 6% luminosity variation at outer edge (within 5–8% spec).
    */
   function drawWedge(
     ctx: CanvasRenderingContext2D,
@@ -348,7 +395,6 @@ export default function CultureAura({ showAxisLines = false }: { showAxisLines?:
     oR: number,
     rgb: { r: number; g: number; b: number },
     sat: number,
-    isHov: boolean,
   ) {
     const r = Math.min(255, Math.round(rgb.r * sat));
     const g = Math.min(255, Math.round(rgb.g * sat));
@@ -359,16 +405,14 @@ export default function CultureAura({ showAxisLines = false }: { showAxisLines?:
     const gD = Math.round(g * 0.94);
     const bD = Math.round(b * 0.94);
 
-    // FIX: Alpha held consistent across stops (no fade effect).
-    // Slight lift in alpha on hover (+0.06) to increase presence.
-    const baseAlpha = isHov ? 0.68 : 0.62;
-    const midAlpha  = isHov ? 0.76 : 0.70;
-    const outerAlpha = isHov ? 0.68 : 0.62; // matches inner to avoid radial fade
+    // Fixed alpha — no hover alpha change (brief prohibits glow/fade effects)
+    const baseAlpha = 0.72;
+    const midAlpha  = 0.80;
 
     const grad = ctx.createRadialGradient(C, C, AURA_START, C, C, oR);
-    grad.addColorStop(0,    `rgba(${r},${g},${b},${baseAlpha})`);
-    grad.addColorStop(0.5,  `rgba(${r},${g},${b},${midAlpha})`);
-    grad.addColorStop(1,    `rgba(${rD},${gD},${bD},${outerAlpha})`);
+    grad.addColorStop(0,   `rgba(${r},${g},${b},${baseAlpha})`);
+    grad.addColorStop(0.5, `rgba(${r},${g},${b},${midAlpha})`);
+    grad.addColorStop(1,   `rgba(${rD},${gD},${bD},${baseAlpha})`);
 
     ctx.beginPath();
     ctx.moveTo(C, C);
@@ -378,33 +422,101 @@ export default function CultureAura({ showAxisLines = false }: { showAxisLines?:
     ctx.fill();
   }
 
-  // ── Layer 2: Obligation arcs (STATIC — structural duty layer) ──
-  // Spec: "Obligation arcs are static. No animation, pulsing, or colour
-  // transitions are applied." This function must never receive `time`.
+  // ── Layer 3: Obligation arcs ──
+  // Partial arcs rendered OUTSIDE the outer ring, spanning only the angular range
+  // of their mapped indicators — not full circles. This is the correct architecture:
+  // the arc visually marks *which segments* fall under each governance framework.
+  //
+  // Arc 1 — Psychological Safety: Safety, Job Clarity, Job Control, Justice, Relationships, Reward
+  //   → contiguous span (indices 2–8), note Job Demand(5) is visually enclosed in the span
+  // Arc 2 — Positive Duty: Opportunity, Contribution (top group) + Reward→Trust (bottom group)
+  //   → rendered as two separate partial bands since the groups are not contiguous
   function drawObligationArcs(ctx: CanvasRenderingContext2D) {
-    // FIX: Increased base opacity from 0.38 → 0.48 for better structural presence.
-    // Still subdued — these are duty markers, not highlights.
-    const arcR = AURA_START + 7;
-    segments.forEach((seg) => {
-      const rgb = hexToRgb(seg.color);
+    // Radii are hoisted to component level (OBL1_INNER … OBL2_OUTER)
+    const hovArc = hovArcRef.current;
+
+    // Find angular extent of a contiguous group of named segments
+    const segRange = (names: string[]): { sa: number; ea: number; mid: number } | null => {
+      const matched = names
+        .map(n => segments.find(s => s.name === n))
+        .filter((s): s is AuraSegment => s !== undefined);
+      if (!matched.length) return null;
+      const sa = Math.min(...matched.map(s => s.startAngle));
+      const ea = Math.max(...matched.map(s => s.endAngle));
+      return { sa, ea, mid: (sa + ea) / 2 };
+    };
+
+    // Draw a filled annular sector (partial donut slice)
+    const drawSector = (iR: number, oR: number, sa: number, ea: number, fill: string, stroke: string) => {
       ctx.beginPath();
-      ctx.arc(C, C, arcR, seg.startAngle, seg.endAngle);
-      ctx.strokeStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},0.48)`;
-      ctx.lineWidth = 3;
-      ctx.lineCap = "butt";
+      ctx.arc(C, C, oR, sa, ea, false);
+      ctx.arc(C, C, iR, ea, sa, true);
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+      ctx.lineWidth = 0.5;
+      ctx.strokeStyle = stroke;
       ctx.stroke();
-    });
+    };
+
+    // Draw label centred along the arc — text rotated to follow the arc tangent
+    const drawArcLabel = (text: string, r: number, midAngle: number) => {
+      const x = C + r * Math.cos(midAngle);
+      const y = C + r * Math.sin(midAngle);
+      ctx.save();
+      ctx.translate(x, y);
+      // Rotate so text runs along the arc; flip if bottom half so text stays readable
+      const rot = midAngle + Math.PI / 2;
+      const flip = midAngle > Math.PI / 2 || midAngle < -Math.PI / 2;
+      ctx.rotate(flip ? rot + Math.PI : rot);
+      ctx.font = "600 6px system-ui, -apple-system, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "rgba(255,255,255,0.90)";
+      ctx.fillText(text, 0, 0);
+      ctx.restore();
+    };
+
+    ctx.save();
+
+    // ── Arc 1: Psychological Safety ──
+    const psych = segRange(["Safety", "Job Clarity", "Job Control", "Justice", "Relationships", "Reward"]);
+    if (psych) {
+      const hov1 = hovArc === "psych";
+      drawSector(OBL1_INNER, OBL1_OUTER, psych.sa, psych.ea,
+        hov1 ? "rgba(212,168,148,0.55)" : "rgba(212,168,148,0.30)",
+        hov1 ? "rgba(180,125,105,0.70)" : "rgba(180,125,105,0.35)");
+      drawArcLabel("Psychological Safety", (OBL1_INNER + OBL1_OUTER) / 2, psych.mid);
+    }
+
+    // ── Arc 2: Positive Duty ──
+    // Maps: Opportunity + Contribution (top, indices 0–1) AND Reward→Trust (bottom, indices 8–13)
+    // Rendered as two separate bands since these two groups are not angularly contiguous.
+    const pdTop = segRange(["Opportunity", "Contribution"]);
+    const pdBot = segRange(["Reward", "Support", "Leadership", "Inclusion", "Respectful Norms", "Trust"]);
+
+    const hov2 = hovArc === "posduty";
+    if (pdTop) {
+      drawSector(OBL2_INNER, OBL2_OUTER, pdTop.sa, pdTop.ea,
+        hov2 ? "rgba(185,155,172,0.52)" : "rgba(185,155,172,0.26)",
+        hov2 ? "rgba(155,115,138,0.65)" : "rgba(155,115,138,0.30)");
+    }
+    if (pdBot) {
+      drawSector(OBL2_INNER, OBL2_OUTER, pdBot.sa, pdBot.ea,
+        hov2 ? "rgba(185,155,172,0.52)" : "rgba(185,155,172,0.26)",
+        hov2 ? "rgba(155,115,138,0.65)" : "rgba(155,115,138,0.30)");
+      drawArcLabel("Positive Duty", (OBL2_INNER + OBL2_OUTER) / 2, pdBot.mid);
+    }
+
+    ctx.restore();
   }
 
-  // ── Layer 3: Axis lines ──
-  // FIX: Base opacity raised from 0.28 → 0.38 so lines are perceptible
-  // at rest. On hover: opacity jumps to 0.75 and line thickens to 2.5 px.
-  // These deltas create a clear but calm interactive response.
+  // ── Layer 4: Axis lines ──
   function drawAxisLines(ctx: CanvasRenderingContext2D, time: number) {
     const hov = hovRef.current;
     segments.forEach((seg) => {
       const isHov = hov?.name === seg.name;
-      const oR = outerRadius(seg, time);
+      const oR = outerRadius(seg); // static radius
       const x1 = C + AURA_START * Math.cos(seg.midAngle);
       const y1 = C + AURA_START * Math.sin(seg.midAngle);
       const x2 = C + oR * Math.cos(seg.midAngle);
@@ -418,75 +530,56 @@ export default function CultureAura({ showAxisLines = false }: { showAxisLines?:
       ctx.lineWidth = isHov ? 2.5 : 1;
       ctx.stroke();
     });
+    void time; // time unused now radius is static; kept for consistent drawScene signature
   }
 
-  // ── Layer 4: Centre circle (solid fill + inner shadow) ──
-  // Spec: "The central index circle uses solid colour fill with slight inner
-  // shadow to create depth." No outer glow. Shadow gradient goes from
-  // transparent at the centre out to a darkened rim — inward shadow effect.
-  function drawCenterCircle(ctx: CanvasRenderingContext2D, time: number) {
-    const rgb = hexToRgb(BLOB_GRAY);
-    const darkR = Math.max(0, rgb.r - 45);
-    const darkG = Math.max(0, rgb.g - 45);
-    const darkB = Math.max(0, rgb.b - 45);
+  // ── Layer 5: Centre circle — FIX #1 + #2: Stable solid circle, warm salmon colour ──
+  // Brief: "solid colour fill with slight inner shadow to create depth."
+  // No blob, no wobble, no shape deformation, no outer glow.
+  // This function intentionally takes no `time` argument — it must never animate.
+  function drawCenterCircle(ctx: CanvasRenderingContext2D) {
+    const rgb = hexToRgb(CENTER_COLOR);
 
-    // Blob path — organic multi-harmonic wobble with gentle global breath
-    const POINTS = 72;
-    const blobPath = () => {
-      ctx.beginPath();
-      for (let i = 0; i <= POINTS; i++) {
-        const a = (i / POINTS) * Math.PI * 2;
-        const breath = Math.sin(time * 0.28) * 3.5;   // slow global pulse ±3.5 px
-        const wobble =
-          Math.sin(time * 0.55 + a * 2) * 4.0 +        // main 2-lobe blob
-          Math.sin(time * 0.38 + a * 3) * 2.5 +        // secondary 3-lobe
-          Math.sin(time * 0.22 + a * 5) * 1.2;         // fine surface texture
-        const r = INNER_R + breath + wobble;
-        const x = C + r * Math.cos(a);
-        const y = C + r * Math.sin(a);
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.closePath();
-    };
-
-    // Solid fill
-    blobPath();
-    ctx.fillStyle = BLOB_GRAY;
+    // Solid colour fill
+    ctx.beginPath();
+    ctx.arc(C, C, INNER_R, 0, Math.PI * 2);
+    ctx.fillStyle = CENTER_COLOR;
     ctx.fill();
 
-    // Inner shadow for depth
-    const shadow = ctx.createRadialGradient(C, C, INNER_R * 0.55, C, C, INNER_R + 10);
+    // Slight inner shadow — gradient transparent at centre, darkened at rim
+    // Creates depth without glow. Brief: "slight inner shadow to create depth."
+    const shadow = ctx.createRadialGradient(C, C, INNER_R * 0.5, C, C, INNER_R);
     shadow.addColorStop(0, "rgba(0,0,0,0)");
-    shadow.addColorStop(1, `rgba(${darkR},${darkG},${darkB},0.32)`);
-    blobPath();
+    shadow.addColorStop(1, "rgba(0,0,0,0.20)");
+    ctx.beginPath();
+    ctx.arc(C, C, INNER_R, 0, Math.PI * 2);
     ctx.fillStyle = shadow;
     ctx.fill();
 
-    // Thin border to separate centre from aura
-    blobPath();
-    ctx.strokeStyle = `rgba(${darkR},${darkG},${darkB},0.18)`;
+    // Subtle border to separate centre from aura
+    const darkR = Math.max(0, rgb.r - 35);
+    const darkG = Math.max(0, rgb.g - 35);
+    const darkB = Math.max(0, rgb.b - 35);
+    ctx.beginPath();
+    ctx.arc(C, C, INNER_R, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(${darkR},${darkG},${darkB},0.30)`;
     ctx.lineWidth = 1;
     ctx.stroke();
   }
 
-  // ── Layer 5: Labels (always visible, opacity increases on hover) ──
-  // Spec point 5: "increase label opacity" on hover — implies labels exist
-  // at rest at a lower opacity and brighten on hover. Labels are always drawn.
-  // Text is clamped inside canvas bounds so no label is ever clipped.
+  // ── Layer 6: Labels (hover only, opacity increases on hover) ──
   function drawHoverLabel(ctx: CanvasRenderingContext2D, time: number) {
     const hov = hovRef.current;
-    const MARGIN = 4; // min px from canvas edge
+    const MARGIN = 4;
 
     ctx.font = "500 9.5px system-ui, -apple-system, sans-serif";
 
     segments.forEach((seg) => {
       const isHov = hov?.name === seg.name;
-      const oR = outerRadius(seg, time) + 14;
+      const oR = outerRadius(seg) + 14; // static radius + label offset
       const rawX = C + oR * Math.cos(seg.midAngle);
       const rawY = C + oR * Math.sin(seg.midAngle);
 
-      // Align text away from centre
       const cosA = Math.cos(seg.midAngle);
       let align: CanvasTextAlign;
       if (cosA > 0.15)       align = "left";
@@ -497,13 +590,11 @@ export default function CultureAura({ showAxisLines = false }: { showAxisLines?:
       const metrics = ctx.measureText(seg.name);
       const tw = metrics.width;
 
-      // Compute the left edge of the rendered text so we can clamp it
       let textLeft: number;
       if (align === "left")        textLeft = rawX;
       else if (align === "right")  textLeft = rawX - tw;
       else                         textLeft = rawX - tw / 2;
 
-      // Clamp x so the full label stays within [MARGIN, SIZE - MARGIN]
       let clampedX = rawX;
       if (textLeft < MARGIN) {
         clampedX = rawX + (MARGIN - textLeft);
@@ -511,15 +602,13 @@ export default function CultureAura({ showAxisLines = false }: { showAxisLines?:
         clampedX = rawX - (textLeft + tw - (SIZE - MARGIN));
       }
 
-      // Clamp y within canvas bounds (label is ~10px tall)
       const clampedY = Math.max(MARGIN + 10, Math.min(SIZE - MARGIN, rawY));
 
-      // Only show label on hover
       if (!isHov) return;
-      const opacity = 0.88;
-      ctx.fillStyle = `rgba(243,232,255,${opacity})`; // purple-50 — light
+      ctx.fillStyle = "rgba(243,232,255,0.88)";
       ctx.fillText(seg.name, clampedX, clampedY + 4);
     });
+    void time; // time unused now radius is static; kept for consistent drawScene signature
   }
 
   // ══════════════════════════════════════════
@@ -556,21 +645,28 @@ export default function CultureAura({ showAxisLines = false }: { showAxisLines?:
 
       </div>
 
-      {/* Detail table — absolute so it never shifts the chart; left edge = chart right edge + 8px */}
-      {clickedSeg && (
-        <div
-          className="absolute z-20 bg-white/95 border border-slate-100 rounded-xl shadow-sm p-4 w-60"
-          style={{
-            left: `calc(50% + ${displaySize / 2 + 8}px)`,
-            top: "8px",
-            backdropFilter: "blur(10px)",
-          }}
-        >
+      {/* Detail panel — source records table per brief (col E: Sunburst Table + Data Mapping) */}
+      {clickedSeg && (() => {
+        const records: SourceRecord[] = sourceRecords.filter(
+          (r) => r.indicatorId === clickedSeg.name
+        );
+        return (
+          <div
+            className="absolute z-20 bg-white/95 border border-slate-100 rounded-xl shadow-sm p-4"
+            style={{
+              left: `calc(50% + ${displaySize / 2 + 8}px)`,
+              top: "8px",
+              width: "420px",
+              backdropFilter: "blur(10px)",
+              maxHeight: "480px",
+              overflowY: "auto",
+            }}
+          >
             {/* Header */}
             <div className="flex justify-between items-start mb-3">
               <div>
                 <div className="text-[9px] uppercase tracking-widest text-slate-400 mb-0.5">
-                  {clickedSeg.type === "domain" ? "Domain" : "Behaviour"}
+                  {clickedSeg.type === "domain" ? "Inner Ring · Domain" : "Outer Ring · Behaviour"}
                 </div>
                 <div className="font-semibold text-slate-800 text-[13px] leading-tight">
                   {clickedSeg.name}
@@ -578,75 +674,81 @@ export default function CultureAura({ showAxisLines = false }: { showAxisLines?:
               </div>
               <button
                 onClick={() => setClickedSeg(null)}
-                className="text-slate-300 hover:text-slate-500 text-xl leading-none mt-0.5"
+                className="text-slate-300 hover:text-slate-500 text-xl leading-none mt-0.5 ml-4 flex-shrink-0"
               >
                 ×
               </button>
             </div>
 
-            {/* Domain data */}
-            {clickedSeg.type === "domain" && (
-              <table className="w-full text-[12px]">
-                <tbody className="divide-y divide-slate-50">
-                  <tr>
-                    <td className="text-slate-400 py-1.5">Score</td>
-                    <td className="text-right font-semibold" style={{ color: "#A83618" }}>
-                      {clickedSeg.score}
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="text-slate-400 py-1.5">Instrument weight</td>
-                    <td className="text-right font-medium text-slate-700">
-                      {((clickedSeg.weight ?? 0) * 100).toFixed(0)}%
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="text-slate-400 py-1.5">Activation</td>
-                    <td className="text-right font-medium text-slate-700">
-                      {(clickedSeg.extrusion * 2).toFixed(2)} / 2.00
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+            {/* Description */}
+            {clickedSeg.description && (
+              <p className="text-[11px] text-slate-500 leading-relaxed mb-3 border-b border-slate-100 pb-3">
+                {clickedSeg.description}
+              </p>
             )}
 
-            {/* Behaviour data */}
-            {clickedSeg.type === "behaviour" && (
-              <table className="w-full text-[12px]">
-                <thead>
-                  <tr className="border-b border-slate-100">
-                    <th className="text-left text-slate-400 font-normal pb-1.5 text-[11px]">Status</th>
-                    <th className="text-right text-slate-400 font-normal pb-1.5 text-[11px]">Share</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50">
-                  {clickedSeg.statusSubSegments?.map((s) => (
-                    <tr key={s.status}>
-                      <td className="py-1.5">
-                        <div className="flex items-center gap-1.5">
-                          <span
-                            className="w-2 h-2 rounded-full flex-shrink-0"
-                            style={{ backgroundColor: s.color }}
-                          />
-                          <span className="text-slate-600">{s.status}</span>
-                        </div>
-                      </td>
-                      <td className="text-right font-semibold text-slate-700">
-                        {Math.round(s.proportion * 100)}%
-                      </td>
-                    </tr>
-                  ))}
-                  <tr className="border-t border-slate-100">
-                    <td className="text-slate-400 pt-2">Rate</td>
-                    <td className="text-right font-semibold text-slate-700 pt-2">
-                      {clickedSeg.ratePerHundred}/100
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+            {/* Summary row */}
+            <div className="flex gap-3 mb-3 text-[11px]">
+              {clickedSeg.type === "domain" && (
+                <>
+                  <span className="bg-slate-50 rounded px-2 py-1 text-slate-500">
+                    Score <span className="font-semibold text-slate-700">{clickedSeg.score}</span>
+                  </span>
+                  <span className="bg-slate-50 rounded px-2 py-1 text-slate-500">
+                    Weight <span className="font-semibold text-slate-700">{((clickedSeg.weight ?? 0) * 100).toFixed(0)}%</span>
+                  </span>
+                  <span className="bg-slate-50 rounded px-2 py-1 text-slate-500">
+                    Activation <span className="font-semibold text-slate-700">{(clickedSeg.extrusion * 2).toFixed(2)}/2</span>
+                  </span>
+                </>
+              )}
+              {clickedSeg.type === "behaviour" && (
+                <span className="bg-slate-50 rounded px-2 py-1 text-slate-500">
+                  Rate <span className="font-semibold text-slate-700">{clickedSeg.ratePerHundred}/100</span>
+                </span>
+              )}
+            </div>
+
+            {/* Response Records — column format per brief col E */}
+            {records.length > 0 && (
+              <div>
+                <div className="text-[9px] uppercase tracking-widest text-slate-400 mb-1.5">Response Records</div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[10px] border-collapse">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-slate-50">
+                        <th className="text-left py-1.5 pr-2 pl-1 font-semibold text-slate-500">id</th>
+                        <th className="text-left py-1.5 pr-2 font-semibold text-slate-500">timestamp</th>
+                        <th className="text-left py-1.5 pr-2 font-semibold text-slate-500">workflow_id</th>
+                        <th className="text-left py-1.5 pr-2 font-semibold text-slate-500">question_id</th>
+                        <th className="text-left py-1.5 pr-2 font-semibold text-slate-500">indicator_id</th>
+                        <th className="text-center py-1.5 pr-2 font-semibold text-slate-500">response_value</th>
+                        <th className="text-left py-1.5 font-semibold text-slate-500">respondent_id</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {records.map((r: SourceRecord) => (
+                        <tr key={r.id} className="hover:bg-slate-50">
+                          <td className="py-1.5 pr-2 pl-1 text-slate-500 font-mono">{r.id}</td>
+                          <td className="py-1.5 pr-2 text-slate-600 whitespace-nowrap">{r.timestamp}</td>
+                          <td className="py-1.5 pr-2 text-slate-600">{r.workflowId}</td>
+                          <td className="py-1.5 pr-2 text-slate-600 font-mono">{r.questionId}</td>
+                          <td className="py-1.5 pr-2 text-slate-600">{r.indicatorId}</td>
+                          <td className="py-1.5 pr-2 text-center font-semibold"
+                            style={{ color: r.responseValue === 1 ? "#4CAF50" : "#E57373" }}>
+                            {r.responseValue === 1 ? "+1" : "-1"}
+                          </td>
+                          <td className="py-1.5 text-slate-600">{r.respondentId}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             )}
           </div>
-        )}
+        );
+      })()}
 
     </div>
   );
